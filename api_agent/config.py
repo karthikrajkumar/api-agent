@@ -51,5 +51,9 @@ class Settings(BaseSettings):
     TRANSPORT: str = "streamable-http"
     CORS_ALLOWED_ORIGINS: str = "*"
 
+    # Recipes (in-process reuse)
+    ENABLE_RECIPES: bool = True
+    RECIPE_CACHE_SIZE: int = 64
+
 
 settings = Settings()

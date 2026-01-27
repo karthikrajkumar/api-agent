@@ -17,13 +17,22 @@ SQL_RULES = """<sql-rules>
 - UUIDs: CAST(id AS VARCHAR)
 - UNNEST: FROM t, UNNEST(t.arr) AS u(val) → t.col for original, u.val for element
 - EXCLUDE: SELECT * EXCLUDE (col) FROM t (not t.* EXCLUDE)
+- If joins/CTEs share column names, always qualify columns (e.g., table_alias.column)
 </sql-rules>"""
 
 # Ambiguity handling
 UNCERTAINTY_SPEC = """<uncertainty>
 - Ambiguous query: state your interpretation, then answer
+- If missing critical inputs, ask 1-2 precise questions; otherwise state assumptions and proceed
 - Never fabricate figures—only report what API returned
 </uncertainty>"""
+
+# Tool usage rules
+TOOL_USAGE_RULES = """<tool-usage>
+- Prefer tools for user-specific or fresh data
+- Avoid redundant tool calls
+- Parallelize independent reads when possible
+</tool-usage>"""
 
 # Optional parameters handling
 OPTIONAL_PARAMS_SPEC = """<optional-params>
@@ -45,11 +54,55 @@ EFFECTIVE_PATTERNS = """<effective-patterns>
 - Name tables descriptively
 - Adapt SQL syntax on failure
 - Use sensible defaults for pagination/limits
+- Stop once the answer is ready; avoid extra tool calls
 </effective-patterns>"""
 
+# Decision guidance for choosing between recipes, API calls, and SQL pipelines
+DECISION_GUIDANCE = """<decision-guidance>
+When to use each approach:
+
+RECIPES (if listed in <recipes> above):
+- Score >= 0.7: Strong match, prefer recipe if params available
+- Score < 0.7: Consider direct API/SQL instead
+- Use when question very similar to past query
+- SKIP if params unclear or question differs
+
+DIRECT API CALLS (rest_call, graphql_query):
+- Simple data retrieval, no filtering needed
+- User wants raw unprocessed data
+- Single endpoint sufficient
+- Set return_directly=true if no LLM analysis needed
+
+SQL PIPELINES (API + sql_query):
+- Filtering, sorting, aggregation required
+- Joining multiple data sources
+- Complex transformations
+- User asks: "filtered", "sorted", "top N", "average", "grouped"
+
+RETURN_DIRECTLY FLAG (on graphql_query, rest_call, sql_query, recipe tools):
+When true: YOU still call the tool, but YOUR final response is skipped. Raw data goes directly to user.
+
+Use return_directly=true when:
+- User wants data as-is: "list", "get", "fetch", "show"
+- Examples: "list users", "get order 123", "show products"
+
+Use return_directly=false when:
+- User needs YOU to answer: "why", "how many", "which", "best"
+- Examples: "how many users", "why failed", "which is cheapest"
+
+Default: recipes=true, others=false. Only on success.
+</decision-guidance>"""
+
 # Tool descriptions
-SQL_TOOL_DESC = """sql_query(sql)
-  DuckDB SQL on stored tables. For filtering, sorting, aggregation, joins."""
+REST_TOOL_DESC = """rest_call(method, path, path_params?, query_params?, body?, name?, return_directly?)
+  Execute REST API call. Store result as DuckDB table for sql_query.
+  - return_directly: Skip LLM analysis, return raw data directly to user
+  Use for: direct reads, exploratory calls, when no recipe matches"""
+
+SQL_TOOL_DESC = """sql_query(sql, return_directly?)
+  Query DuckDB tables from previous API calls. For filtering, aggregation, joins.
+  - return_directly: Skip LLM processing, return query results directly
+  Use for: filtering, sorting, analytics, combining multiple API responses"""
 
 SEARCH_TOOL_DESC = """search_schema(pattern, context=10, offset=0)
   Regex search on schema JSON. Returns matching lines with context.

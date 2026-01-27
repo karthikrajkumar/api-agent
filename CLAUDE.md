@@ -11,7 +11,8 @@ uv sync --group dev
 
 **Run server:**
 ```bash
-uv run api-agent
+uv run api-agent                    # Local dev
+# Or direct (no clone): uvx --from git+https://github.com/agoda-com/api-agent api-agent
 # Server starts on http://localhost:3000/mcp
 ```
 
@@ -71,6 +72,13 @@ docker run -p 3000:3000 -e OPENAI_API_KEY="..." api-agent
   - **model.py**: LLM config (OpenAI-compatible)
   - **progress.py**: Turn tracking
   - **schema_search.py**: Grep-like schema search tool
+  - **contextvar_utils.py**: Safe ContextVar access helpers
+
+- **api_agent/recipe/**: Parameterized pipeline caching
+  - **store.py**: `RecipeStore` (LRU in-memory cache, thread-safe)
+  - **extractor.py**: Extract reusable recipes from agent runs
+  - **tools.py**: Create dynamic MCP tools from recipes
+  - **common.py**: Recipe validation, execution, parameter binding
 
 - **api_agent/graphql/**: GraphQL client (httpx)
 - **api_agent/rest/**: REST client (httpx) + OpenAPI loader
@@ -103,6 +111,26 @@ Set `X-Poll-Paths` header to enable `poll_until_done` tool:
 - Auto-increments `polling.count` in body between polls
 - Checks `done_field` (dot-path like `"status"`, `"trips.0.isCompleted"`) against `done_value`
 - Max 20 polls (configurable), default 3s delay
+
+### Recipes
+
+Caches parameterized API call + SQL pipelines from successful agent runs:
+
+```
+Query → Agent executes → Extractor LLM → Recipe stored → Future match → Direct execute
+```
+
+- **Storage**: LRU in-memory (default 64 entries, `RECIPE_CACHE_SIZE`)
+- **Key**: `(api_id, schema_hash)` - auto-invalidates on schema change
+- **Matching**: Fuzzy question similarity via RapidFuzz token matching
+- **Templating**:
+  - GraphQL: `{{param}}` in `query_template`
+  - REST: `{"$param": "name"}` in `path_params`, `query_params`, `body`
+  - SQL: `{{param}}` in SQL strings
+- **Validation**: Recipe must render back to original execution (roundtrip check)
+- **Config**: `ENABLE_RECIPES` (default: True), `RECIPE_CACHE_SIZE` (default: 64)
+
+Key files: `store.py` (LRU cache), `extractor.py` (LLM extraction), `common.py` (execution)
 
 ## Testing Notes
 

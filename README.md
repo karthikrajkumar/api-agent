@@ -12,18 +12,22 @@ Point at any GraphQL or REST API. Ask questions in natural language. The agent f
 
 **🔒 Safe by default.** Read-only. Mutations blocked unless explicitly allowed.
 
+**🧠 Recipe learning.** Agent learns from successful queries. Ask once, reuse cached pipelines execute instantly without LLM reasoning.
+
 ## Quick Start
 
-**1. Run:**
-```bash
-git clone https://github.com/agoda-com/api-agent.git
-cd api-agent
-uv sync
-OPENAI_API_KEY=your_key uv run python -m api_agent
-```
+**1. Run (choose one):**
 
-Or with Docker:
 ```bash
+# Direct run (no clone needed)
+OPENAI_API_KEY=your_key uvx --from git+https://github.com/agoda-com/api-agent api-agent
+
+# Or clone & run
+git clone https://github.com/agoda-com/api-agent.git && cd api-agent
+uv sync && OPENAI_API_KEY=your_key uv run api-agent
+
+# Or Docker
+git clone https://github.com/agoda-com/api-agent
 docker build -t api-agent .
 docker run -p 3000:3000 -e OPENAI_API_KEY=your_key api-agent
 ```
@@ -119,6 +123,8 @@ Tool names auto-generated from URL (e.g., `example_query`). Override with `X-API
 | `OPENAI_BASE_URL`             | No       | https://api.openai.com/v1 | Custom LLM endpoint                |
 | `API_AGENT_MODEL_NAME`        | No       | gpt-5.2                   | Model (e.g., gpt-5.2)              |
 | `API_AGENT_PORT`              | No       | 3000                      | Server port                        |
+| `API_AGENT_ENABLE_RECIPES`    | No       | true                      | Enable recipe learning & caching   |
+| `API_AGENT_RECIPE_CACHE_SIZE` | No       | 64                        | Max cached recipes (LRU eviction)  |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No       | -                         | OpenTelemetry tracing endpoint     |
 
 ---
@@ -178,6 +184,47 @@ flowchart TB
 ```
 
 **Stack:** [FastMCP](https://github.com/jlowin/fastmcp) • [OpenAI Agents SDK](https://openai.github.io/openai-agents-python/) • [DuckDB](https://duckdb.org)
+
+---
+
+## Recipe Learning
+
+Agent automatically learns reusable patterns from successful queries. When you ask a question, the agent:
+
+1. **Executes** - Runs API calls + SQL post-processing via LLM reasoning
+2. **Extracts** - LLM converts execution trace into parameterized template
+3. **Caches** - Stores recipe keyed by (API, schema hash) with fuzzy question matching
+4. **Reuses** - Similar future questions execute cached recipe instantly (no LLM reasoning)
+
+```mermaid
+flowchart LR
+    subgraph First["First Query"]
+        Q1["'Top 5 users by age'"]
+        A1["Agent reasons"]
+        E1["API + SQL"]
+        R1["Recipe extracted"]
+    end
+
+    subgraph Cache["Recipe Cache"]
+        T["Template:<br/>LIMIT {{limit}}"]
+    end
+
+    subgraph Reuse["Similar Query"]
+        Q2["'Top 10 users by age'"]
+        M["Fuzzy match"]
+        X["Execute directly"]
+    end
+
+    Q1 --> A1 --> E1 --> R1 --> T
+    Q2 --> M --> T --> X
+```
+
+**Recipe structure:**
+- **GraphQL**: `query_template` with `{{param}}` placeholders
+- **REST**: `path_params`, `query_params`, `body` with `{"$param": "name"}` refs
+- **SQL**: `{{param}}` in SQL strings
+
+Recipes auto-expire when schema changes (hash mismatch). Disable with `API_AGENT_ENABLE_RECIPES=false`.
 
 ---
 

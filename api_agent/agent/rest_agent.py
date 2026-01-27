@@ -16,34 +16,64 @@ from ..executor import (
     extract_tables_from_response,
     truncate_for_context,
 )
+from ..recipe import (
+    RECIPE_STORE,
+    _return_directly_flag,
+    _set_return_directly,
+    _tools_to_final_output,
+    build_api_id,
+    build_partial_result,
+    build_recipe_docstring,
+    create_params_model,
+    deduplicate_tool_name,
+    execute_recipe_steps,
+    format_recipe_response,
+    maybe_extract_and_save_recipe,
+    render_param_refs,
+    search_recipes,
+    validate_and_prepare_recipe,
+    validate_recipe_params,
+)
 from ..rest.client import execute_request
 from ..rest.schema_loader import fetch_schema_context
 from ..tracing import trace_metadata
+from .contextvar_utils import safe_append_contextvar_list, safe_get_contextvar
 from .model import get_run_config, model
 from .progress import get_turn_context, reset_progress
 from .prompts import (
     CONTEXT_SECTION,
+    DECISION_GUIDANCE,
     EFFECTIVE_PATTERNS,
     OPTIONAL_PARAMS_SPEC,
     PERSISTENCE_SPEC,
     REST_SCHEMA_NOTATION,
+    REST_TOOL_DESC,
     SEARCH_TOOL_DESC,
     SQL_RULES,
     SQL_TOOL_DESC,
+    TOOL_USAGE_RULES,
     UNCERTAINTY_SPEC,
 )
-from .schema_search import create_search_schema_impl
+from .schema_search import create_search_schema_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _log(msg: str) -> None:
+    """Log agent activity only in debug mode."""
+    if settings.DEBUG:
+        logger.info(f"[REST] {msg}")
 
 
 # Context-local storage (isolated per async request)
 # NOTE: Use mutable containers for values that need to be modified by tool functions,
 # because ContextVar.set() in child tasks (task groups) doesn't propagate to parent.
 _rest_calls: ContextVar[list[dict[str, Any]]] = ContextVar("rest_calls")
+_recipe_steps: ContextVar[list[dict[str, Any]]] = ContextVar("recipe_steps")
 _query_results: ContextVar[dict[str, Any]] = ContextVar("query_results")
 _last_result: ContextVar[list] = ContextVar("last_result")  # Mutable container: [result_value]
 _raw_schema: ContextVar[str] = ContextVar("raw_schema")  # Raw OpenAPI JSON for search
+_sql_steps: ContextVar[list[str]] = ContextVar("sql_steps")
 
 
 def _get_nested_value(data: dict | None, path: str) -> Any:
@@ -97,11 +127,12 @@ def _set_nested_value(data: dict, path: str, value: Any) -> None:
     current[keys[-1]] = value
 
 
-def _build_system_prompt(poll_paths: tuple[str, ...] = ()) -> str:
+def _build_system_prompt(poll_paths: tuple[str, ...] = (), recipe_context: str = "") -> str:
     """Build system prompt for REST agent.
 
     Args:
         poll_paths: Paths that require polling (empty = no polling support)
+        recipe_context: Pre-computed recipe suggestions to inject
     """
     current_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -133,29 +164,30 @@ IMPORTANT: These paths are ASYNC and REQUIRE polling: {paths_str}
         poll_example = f"""Polling: poll_until_done("POST", "{poll_paths[0]}", done_field="isCompleted", done_value="true", body='{{...}}')
 """
 
-    return f"""You are a REST API agent that answers questions by querying APIs and returning data.
+    workflow_start = "1"
 
-{CONTEXT_SECTION.format(current_date=current_date, max_turns=settings.MAX_AGENT_TURNS)}
+    return f"""You are a REST API agent that answers questions by querying APIs and returning data.
 
 {SQL_RULES}
 
 <tools>
-rest_call(method, path, path_params?, query_params?, body?, name?)
-  Execute REST call. Result stored as DuckDB table.
-  - path_params: URL placeholders like {{id}} in /users/{{id}}
-  - query_params: ?key=value params
-  - body: JSON string for POST/PUT/PATCH
+{REST_TOOL_DESC}
 {poll_tool_desc}
 {SQL_TOOL_DESC}
 
 {SEARCH_TOOL_DESC}
 </tools>
-
 <workflow>
-1. Read <endpoints> and <schemas> below
-2. Check if endpoint is in polling paths - if yes, use poll_until_done; otherwise use rest_call
-3. Use sql_query to filter/aggregate results
+{workflow_start}. Read <endpoints> and <schemas> below
+{int(workflow_start) + 1}. Check if endpoint is in polling paths - if yes, use poll_until_done; otherwise use rest_call
+{int(workflow_start) + 2}. Use sql_query to filter/aggregate results
 </workflow>
+
+{CONTEXT_SECTION.format(current_date=current_date, max_turns=settings.MAX_AGENT_TURNS)}
+
+{recipe_context}
+
+{DECISION_GUIDANCE}
 
 {REST_SCHEMA_NOTATION}
 {poll_rules}
@@ -166,6 +198,8 @@ rest_call(method, path, path_params?, query_params?, body?, name?)
 {PERSISTENCE_SPEC.format(max_turns=settings.MAX_AGENT_TURNS)}
 
 {EFFECTIVE_PATTERNS}
+
+{TOOL_USAGE_RULES}
 
 <examples>
 GET: rest_call("GET", "/users", query_params='{{"limit": 10}}')
@@ -186,6 +220,7 @@ def _create_rest_call_tool(ctx: RequestContext, base_url: str):
         query_params: str = "",
         body: str = "",
         name: str = "data",
+        return_directly: bool = False,
     ) -> str:
         """Execute REST API call and store result for sql_query.
 
@@ -196,6 +231,8 @@ def _create_rest_call_tool(ctx: RequestContext, base_url: str):
             query_params: JSON string for query params (e.g., '{"limit": 10}')
             body: JSON string for request body (e.g., '{"name": "John"}')
             name: Table name for sql_query (default: "data")
+            return_directly: Skip LLM processing, return data directly to client.
+                            Only applies on success. Errors still processed by LLM.
 
         Returns:
             JSON string with API response
@@ -217,18 +254,18 @@ def _create_rest_call_tool(ctx: RequestContext, base_url: str):
         )
 
         # Track call
-        try:
-            _rest_calls.get().append(
-                {
-                    "method": method,
-                    "path": path,
-                    "path_params": path_params,
-                    "query_params": query_params,
-                    "body": body,
-                }
-            )
-        except LookupError:
-            pass
+        safe_append_contextvar_list(
+            _rest_calls,
+            {
+                "method": method,
+                "path": path,
+                "path_params": path_params,
+                "query_params": query_params,
+                "body": body,
+                "name": name,
+                "success": bool(result.get("success")),
+            },
+        )
 
         # Store result for sql_query
         schema_info = None
@@ -245,11 +282,27 @@ def _create_rest_call_tool(ctx: RequestContext, base_url: str):
                 stored_data = tables.get(name)
                 if stored_data is not None:
                     _last_result.get()[0] = stored_data
+
+                # Track successful step for recipe extraction
+                safe_append_contextvar_list(
+                    _recipe_steps,
+                    {
+                        "kind": "rest",
+                        "name": name,
+                        "method": method,
+                        "path": path,
+                        "path_params": pp,
+                        "query_params": qp,
+                        "body": bd,
+                    },
+                )
             except LookupError:
                 pass
 
-        if settings.DEBUG:
-            logger.info(f"[REST Agent] Result: {json.dumps(result)[:500]}")
+        _log(f"RESULT {json.dumps(result)[:200]}")
+
+        if return_directly and result.get("success"):
+            _set_return_directly()
 
         # Smart context optimization - cap by chars for LLM safety
         if result.get("success") and stored_data:
@@ -343,17 +396,19 @@ def _create_poll_tool(ctx: RequestContext, base_url: str):
             )
 
             # Track call
-            try:
-                _rest_calls.get().append(
-                    {
-                        "method": method,
-                        "path": path,
-                        "body": json.dumps(body_dict) if body_dict else "",
-                        "poll_attempt": attempt,
-                    }
-                )
-            except LookupError:
-                pass
+            safe_append_contextvar_list(
+                _rest_calls,
+                {
+                    "method": method,
+                    "path": path,
+                    "path_params": path_params,
+                    "query_params": query_params,
+                    "body": json.dumps(body_dict) if body_dict else "",
+                    "name": name,
+                    "poll_attempt": attempt,
+                    "success": bool(result.get("success")),
+                },
+            )
 
             if not result.get("success"):
                 return json.dumps(
@@ -419,13 +474,14 @@ def _create_poll_tool(ctx: RequestContext, base_url: str):
 
 
 @function_tool
-def sql_query(sql: str) -> str:
+def sql_query(sql: str, return_directly: bool = False) -> str:
     """Run DuckDB SQL on stored REST API results.
 
     Tables available = names from rest_call calls + auto-extracted top-level keys.
 
     Args:
         sql: DuckDB SQL query
+        return_directly: Skip LLM processing, return results directly to client
 
     Returns:
         JSON string with query results
@@ -440,8 +496,7 @@ def sql_query(sql: str) -> str:
 
     result = execute_sql(data, sql)
 
-    if settings.DEBUG:
-        logger.info(f"[REST Agent] SQL result: {json.dumps(result)[:500]}")
+    _log(f"SQL {json.dumps(result)[:200]}")
 
     # Store full result for final response + apply char truncation for LLM
     if result.get("success"):
@@ -450,6 +505,12 @@ def sql_query(sql: str) -> str:
             _last_result.get()[0] = rows
         except LookupError:
             pass
+
+        # Track successful SQL for recipe extraction
+        safe_append_contextvar_list(_sql_steps, sql)
+
+        if return_directly:
+            _set_return_directly()
 
         if isinstance(rows, list):
             return json.dumps(
@@ -460,34 +521,135 @@ def sql_query(sql: str) -> str:
     return json.dumps(result, indent=2)
 
 
-# Create search implementation bound to REST schema context var
-_search_schema_impl = create_search_schema_impl(_raw_schema)
+def _create_individual_recipe_tools(
+    ctx: RequestContext,
+    base_url: str,
+    suggestions: list[dict[str, Any]],
+) -> list:
+    """Generate one function_tool per recipe suggestion."""
+    tools = []
+    seen_names: set[str] = set()
+
+    for s in suggestions:
+        recipe = RECIPE_STORE.get_recipe(s["recipe_id"])
+        if not recipe:
+            continue
+
+        tool_name = deduplicate_tool_name(s.get("tool_name", "unknown_recipe"), seen_names)
+        params_spec = recipe.get("params", {})
+        docstring = build_recipe_docstring(
+            s["question"], recipe.get("steps", []), recipe.get("sql_steps", [])
+        )
+
+        def make_tool(rid: str, pspec: dict[str, Any], doc: str, tname: str):
+            ParamsModel = create_params_model(pspec, tname)
+
+            async def dynamic_recipe_tool(params: ParamsModel, return_directly: bool = True) -> str:
+                kwargs = params.model_dump() if hasattr(params, "model_dump") else params.dict()
+                validated_params, error = validate_recipe_params(pspec, kwargs)
+                if error:
+                    return error
+
+                recipe, validated_params, error = validate_and_prepare_recipe(
+                    rid, json.dumps(kwargs), _raw_schema
+                )
+                if error:
+                    return error
+
+                async def rest_step_executor(step_idx, step, params, results):
+                    if not isinstance(step, dict) or step.get("kind") != "rest":
+                        return (
+                            False,
+                            None,
+                            json.dumps(
+                                {"success": False, "error": "invalid recipe step"}, indent=2
+                            ),
+                            None,
+                        )
+
+                    method = str(step.get("method", "GET")).upper()
+                    path = str(step.get("path", ""))
+                    name = str(step.get("name") or "data")
+
+                    pp = render_param_refs(step.get("path_params") or {}, params)
+                    qp = render_param_refs(step.get("query_params") or {}, params)
+                    bd = render_param_refs(step.get("body") or {}, params)
+
+                    res = await execute_request(
+                        method,
+                        path,
+                        pp if isinstance(pp, dict) else None,
+                        qp if isinstance(qp, dict) else None,
+                        bd if isinstance(bd, dict) and bd else None,
+                        base_url=base_url,
+                        headers=ctx.target_headers,
+                        allow_unsafe_paths=list(ctx.allow_unsafe_paths),
+                    )
+                    if not res.get("success"):
+                        return (
+                            False,
+                            None,
+                            json.dumps(
+                                {"success": False, "error": res.get("error", "request failed")},
+                                indent=2,
+                            ),
+                            None,
+                        )
+
+                    data = res.get("data", {})
+                    tables, _ = extract_tables_from_response(data, name)
+                    results.update(tables)
+                    _query_results.set(results)
+
+                    call_rec = {
+                        "method": method,
+                        "path": path,
+                        "path_params": json.dumps(pp) if pp else "",
+                        "query_params": json.dumps(qp) if qp else "",
+                        "body": json.dumps(bd) if bd else "",
+                        "name": name,
+                        "success": True,
+                    }
+                    safe_append_contextvar_list(_rest_calls, call_rec)
+                    return True, tables.get(name), "", call_rec
+
+                executed_calls: list[dict[str, Any]] = []
+                success, last_data, executed_sql, error = await execute_recipe_steps(
+                    recipe,
+                    validated_params,
+                    _query_results,
+                    _last_result,
+                    rest_step_executor,
+                    executed_calls,
+                )
+                if not success:
+                    return error
+
+                # Track executed SQL for tracing
+                for sql in executed_sql:
+                    safe_append_contextvar_list(_sql_steps, sql)
+
+                if return_directly:
+                    _set_return_directly()
+
+                return format_recipe_response(
+                    _last_result,
+                    executed_calls,
+                    executed_sql,
+                    "executed_calls",
+                )
+
+            dynamic_recipe_tool.__name__ = tname
+            dynamic_recipe_tool.__doc__ = doc
+            return function_tool(dynamic_recipe_tool)
+
+        tools.append(make_tool(s["recipe_id"], params_spec, docstring, tool_name))
+
+    return tools
 
 
-@function_tool
-def search_schema(
-    pattern: str,
-    context: int = 10,
-    before: int = 0,
-    after: int = 0,
-    offset: int = 0,
-) -> str:
-    """Grep-like search on schema. Output: "line_num:match" or "line_num-context".
-
-    Args:
-        pattern: Regex pattern (case-insensitive)
-        context: Lines around each match (default 10)
-        before: Lines before match (overrides context)
-        after: Lines after match (overrides context)
-        offset: Number of matches to skip (for pagination)
-    """
-    return _search_schema_impl(
-        pattern,
-        before=before,
-        after=after,
-        context=context,
-        offset=offset,
-    )
+# Create search_schema tool bound to REST schema context var
+search_schema = create_search_schema_tool(_raw_schema)
 
 
 async def process_rest_query(question: str, ctx: RequestContext) -> dict[str, Any]:
@@ -498,13 +660,15 @@ async def process_rest_query(question: str, ctx: RequestContext) -> dict[str, An
         ctx: Request context with target_url (OpenAPI spec) and target_headers
     """
     try:
-        if settings.DEBUG:
-            logger.info(f"[REST Agent] Query: {question}")
+        _log(f"QUERY {question[:80]}")
 
         # Reset per-request storage
         _rest_calls.set([])
+        _recipe_steps.set([])
+        _sql_steps.set([])
         _query_results.set({})
         _last_result.set([None])  # Mutable list: [result_value]
+        _return_directly_flag.set([])  # Reset direct return flag
         reset_progress()  # Reset turn counter
 
         # Fetch schema context (target_url = OpenAPI spec URL)
@@ -525,6 +689,17 @@ async def process_rest_query(question: str, ctx: RequestContext) -> dict[str, An
                 "error": "Could not determine base URL. Set X-Base-URL header or ensure spec has 'servers' field.",
             }
 
+        # Pre-flight recipe search
+        suggestions, recipe_context = [], ""
+        if settings.ENABLE_RECIPES:
+            raw_schema = safe_get_contextvar(_raw_schema, "")
+            api_id = build_api_id(ctx, "rest", base_url)
+            suggestions, recipe_context = search_recipes(api_id, raw_schema, question)
+            if suggestions:
+                _log(f"PRE-FLIGHT found={len(suggestions)} ids={[s['recipe_id'] for s in suggestions]}")
+            elif raw_schema:
+                _log(f"PRE-FLIGHT no matches for api_id={api_id[:50]}")
+
         # Create tools with bound context
         rest_tool = _create_rest_call_tool(ctx, base_url)
 
@@ -534,13 +709,19 @@ async def process_rest_query(question: str, ctx: RequestContext) -> dict[str, An
         if include_polling:
             poll_tool = _create_poll_tool(ctx, base_url)
             tools.insert(1, poll_tool)
+        if suggestions:  # Create individual recipe tools for each suggestion
+            recipe_tools = _create_individual_recipe_tools(ctx, base_url, suggestions)
+            tools = [*recipe_tools, *tools]
 
         # Create fresh agent with dynamic tools
         agent = Agent(
             name="rest-agent",
             model=model,
-            instructions=_build_system_prompt(poll_paths=ctx.poll_paths),
+            instructions=_build_system_prompt(
+                poll_paths=ctx.poll_paths, recipe_context=recipe_context
+            ),
             tools=tools,
+            tool_use_behavior=_tools_to_final_output,
         )
 
         # Inject schema into query
@@ -563,35 +744,28 @@ async def process_rest_query(question: str, ctx: RequestContext) -> dict[str, An
             last_data = _last_result.get()[0]
             turn_info = get_turn_context(settings.MAX_AGENT_TURNS)
 
-            if not result.final_output:
-                if last_data:
-                    return {
-                        "ok": True,
-                        "data": f"[Partial - {turn_info}] Data retrieved but agent didn't complete.",
-                        "result": last_data,
-                        "api_calls": api_calls,
-                        "error": None,
-                    }
-                return {
-                    "ok": False,
-                    "data": None,
-                    "result": None,
-                    "api_calls": api_calls,
-                    "error": f"No output ({turn_info})",
-                }
-
-            agent_output = str(result.final_output)
-
         except MaxTurnsExceeded:
             # Return partial results when turn limit exceeded
             api_calls = _rest_calls.get()
             last_data = _last_result.get()[0]
             turn_info = get_turn_context(settings.MAX_AGENT_TURNS)
+            return build_partial_result(last_data, api_calls, turn_info, "api_calls")
 
+        # Check if tool requested direct return (detected by marker)
+        is_direct_return = False
+        try:
+            is_direct_return = result.final_output == "__DIRECT_RETURN__" or bool(
+                _return_directly_flag.get()
+            )
+        except LookupError:
+            pass
+
+        # Early return for error cases (no extraction needed)
+        if not result.final_output and not is_direct_return:
             if last_data:
                 return {
                     "ok": True,
-                    "data": f"[Partial - {turn_info}] Max turns exceeded but data retrieved.",
+                    "data": f"[Partial - {turn_info}] Data retrieved but agent didn't complete.",
                     "result": last_data,
                     "api_calls": api_calls,
                     "error": None,
@@ -601,12 +775,27 @@ async def process_rest_query(question: str, ctx: RequestContext) -> dict[str, An
                 "data": None,
                 "result": None,
                 "api_calls": api_calls,
-                "error": f"Max turns exceeded ({turn_info}), no data retrieved",
+                "error": f"No output ({turn_info})",
             }
 
-        if settings.DEBUG:
-            logger.info(f"[REST Agent] Output: {agent_output[:500]}")
-            logger.info(f"[REST Agent] API calls: {len(api_calls)}")
+        # Build result for success paths
+        if is_direct_return:
+            agent_output = None
+        else:
+            agent_output = str(result.final_output)
+            _log(f"DONE calls={len(api_calls)} output={agent_output[:100]}")
+
+        # Skip polling recipes (v1)
+        skip_polling = any("poll_attempt" in c for c in safe_get_contextvar(_rest_calls, []))
+        await maybe_extract_and_save_recipe(
+            api_type="rest",
+            api_id=build_api_id(ctx, "rest", base_url),
+            question=question,
+            steps=safe_get_contextvar(_recipe_steps, []),
+            sql_steps=safe_get_contextvar(_sql_steps, []),
+            raw_schema=safe_get_contextvar(_raw_schema, ""),
+            skip_condition=skip_polling,
+        )
 
         return {
             "ok": True,

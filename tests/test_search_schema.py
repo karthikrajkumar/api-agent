@@ -5,7 +5,10 @@ import re
 
 import pytest
 
-from api_agent.agent.graphql_agent import _raw_schema, _search_schema_impl
+from api_agent.agent.graphql_agent import _raw_schema
+from api_agent.agent.schema_search import create_search_schema_impl
+
+_search_schema_impl = create_search_schema_impl(_raw_schema)
 
 
 class TestSearchSchema:

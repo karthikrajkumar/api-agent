@@ -4,7 +4,48 @@ import re
 from contextvars import ContextVar
 from typing import Callable
 
+from agents import function_tool
+
 from ..config import settings
+
+
+def create_search_schema_tool(raw_schema_var: ContextVar[str]):
+    """Create a search_schema function_tool bound to a specific context var.
+
+    Args:
+        raw_schema_var: ContextVar holding the raw schema JSON string
+
+    Returns:
+        A FunctionTool for search_schema
+    """
+    impl = create_search_schema_impl(raw_schema_var)
+
+    @function_tool
+    def search_schema(
+        pattern: str,
+        context: int = 10,
+        before: int = 0,
+        after: int = 0,
+        offset: int = 0,
+    ) -> str:
+        """Grep-like search on schema. Output: "line_num:match" or "line_num-context".
+
+        Args:
+            pattern: Regex pattern (case-insensitive)
+            context: Lines around each match (default 10)
+            before: Lines before match (overrides context)
+            after: Lines after match (overrides context)
+            offset: Number of matches to skip (for pagination)
+        """
+        return impl(
+            pattern,
+            before=before,
+            after=after,
+            context=context,
+            offset=offset,
+        )
+
+    return search_schema
 
 
 def create_search_schema_impl(

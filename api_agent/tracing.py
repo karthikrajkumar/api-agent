@@ -59,3 +59,32 @@ def trace_metadata(metadata: dict[str, Any]) -> Generator[None, None, None]:
 def is_enabled() -> bool:
     """Check if tracing is enabled."""
     return _tracer_ready
+
+
+@contextmanager
+def trace_span(name: str, attributes: dict[str, Any] | None = None) -> Generator[Any, None, None]:
+    """Create a span with optional attributes. No-op if tracing disabled.
+
+    Args:
+        name: Span name
+        attributes: Optional attributes to add to span
+
+    Yields:
+        Span object (or None if tracing disabled)
+    """
+    if not _tracer_ready:
+        yield None
+        return
+
+    try:
+        from opentelemetry import trace
+
+        tracer = trace.get_tracer(__name__)
+        with tracer.start_as_current_span(name) as span:
+            if attributes and span:
+                for key, value in attributes.items():
+                    span.set_attribute(key, value)
+            yield span
+    except Exception as e:
+        logger.warning(f"Failed to create span: {e}")
+        yield None

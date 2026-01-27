@@ -65,7 +65,7 @@ Use this to re-run queries from the query tool or execute known operations.""",
             if len(data_str) > settings.MAX_RESPONSE_CHARS:
                 return {
                     "ok": True,
-                    "data": f"{data_str[:settings.MAX_RESPONSE_CHARS]}\n\n[TRUNCATED - Use pagination to fetch smaller chunks.]",
+                    "data": f"{data_str[: settings.MAX_RESPONSE_CHARS]}\n\n[TRUNCATED - Use pagination to fetch smaller chunks.]",
                 }
 
             return {"ok": True, "data": data}
@@ -102,7 +102,7 @@ Use this to re-run queries from the query tool or execute known operations.""",
             if len(data_str) > settings.MAX_RESPONSE_CHARS:
                 return {
                     "ok": True,
-                    "data": f"{data_str[:settings.MAX_RESPONSE_CHARS]}\n\n[TRUNCATED - Use query params to limit results.]",
+                    "data": f"{data_str[: settings.MAX_RESPONSE_CHARS]}\n\n[TRUNCATED - Use query params to limit results.]",
                 }
 
             return {"ok": True, "data": data}
