@@ -126,7 +126,7 @@ class TestRequestContext:
             poll_paths=(),
         )
         with pytest.raises(Exception):  # FrozenInstanceError
-            ctx.target_url = "new"
+            ctx.target_url = "new"  # type: ignore[misc]  # intentional write to frozen field
 
 
 class TestBaseUrl:

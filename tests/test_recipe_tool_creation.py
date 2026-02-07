@@ -20,10 +20,9 @@ def test_create_params_model_basic():
     assert instance.user_id == 456
     assert instance.query == "custom"
 
-    # Test: Default values work
-    instance2 = ParamsModel()
-    assert instance2.user_id == 123
-    assert instance2.query == "test"
+    # Test: All fields required (no defaults -- stored defaults are examples only)
+    with pytest.raises(ValidationError):
+        ParamsModel()
 
     # Test: Extra fields rejected (strict mode)
     with pytest.raises(ValidationError):
@@ -32,6 +31,7 @@ def test_create_params_model_basic():
     # Test: Model has correct schema (no additionalProperties)
     schema = ParamsModel.model_json_schema()
     assert "additionalProperties" not in schema or schema.get("additionalProperties") is False
+    assert sorted(schema.get("required", [])) == ["query", "user_id"]
 
 
 def test_create_params_model_dynamic_name():
@@ -91,10 +91,10 @@ def test_create_params_model_sdk_compatibility():
     assert "startsWith" in schema["properties"]
     assert "limit" in schema["properties"]
 
-    # Verify defaults work
-    instance = ParamsModel()
-    assert instance.startsWith == "A"
-    assert instance.limit == 10
+    # All fields required (no defaults)
+    assert sorted(schema.get("required", [])) == ["limit", "startsWith"]
+    with pytest.raises(ValidationError):
+        ParamsModel()
 
 
 def test_create_params_model_all_types():
@@ -107,12 +107,16 @@ def test_create_params_model_all_types():
     }
 
     ParamsModel = create_params_model(params_spec, "AllTypes")
-    instance = ParamsModel()
+    instance = ParamsModel(str_param="text", int_param=42, float_param=3.14, bool_param=True)
 
     assert instance.str_param == "text"
     assert instance.int_param == 42
     assert instance.float_param == 3.14
     assert instance.bool_param is True
+
+    # All required
+    with pytest.raises(ValidationError):
+        ParamsModel()
 
 
 def test_create_params_model_unknown_type_defaults_to_str():
@@ -120,6 +124,10 @@ def test_create_params_model_unknown_type_defaults_to_str():
     params_spec = {"param": {"type": "unknown", "default": "value"}}
     ParamsModel = create_params_model(params_spec, "UnknownType")
 
-    instance = ParamsModel()
+    instance = ParamsModel(param="value")
     assert instance.param == "value"
     assert isinstance(instance.param, str)
+
+    # Still required
+    with pytest.raises(ValidationError):
+        ParamsModel()

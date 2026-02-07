@@ -48,16 +48,12 @@ def get_request_context() -> RequestContext:
 
     target_url = headers.get("x-target-url")
     api_type = headers.get("x-api-type")
-    target_headers_raw = headers.get("x-target-headers", "{}")
-    allow_unsafe_paths_raw = headers.get("x-allow-unsafe-paths", "[]")
+    target_headers_raw = headers.get("x-target-headers") or "{}"
+    allow_unsafe_paths_raw = headers.get("x-allow-unsafe-paths") or "[]"
     base_url_raw = headers.get("x-base-url")
     include_result_raw = headers.get("x-include-result", "false")
-    poll_paths_raw = headers.get("x-poll-paths", "[]")
+    poll_paths_raw = headers.get("x-poll-paths") or "[]"
 
-    # Normalize empty strings to defaults/None
-    target_headers_raw = target_headers_raw if target_headers_raw else "{}"
-    allow_unsafe_paths_raw = allow_unsafe_paths_raw if allow_unsafe_paths_raw else "[]"
-    poll_paths_raw = poll_paths_raw if poll_paths_raw else "[]"
     base_url = base_url_raw if base_url_raw else None
     include_result = (include_result_raw or "").lower() in ("true", "1", "yes")
 
@@ -103,7 +99,7 @@ def _to_snake_case(name: str) -> str:
     return name.lower().strip("_")
 
 
-def get_full_hostname(url: str) -> str:
+def get_full_hostname(url: str | None) -> str:
     """Get full hostname from URL for description."""
     if not url:
         return "api"
@@ -111,7 +107,7 @@ def get_full_hostname(url: str) -> str:
     return parsed.hostname or "api"
 
 
-def get_tool_name_prefix(url: str) -> str:
+def get_tool_name_prefix(url: str | None) -> str:
     """Get semantic prefix for tool name (≤32 chars).
 
     Extracts meaningful parts from hostname, skipping generic TLDs and infra names.

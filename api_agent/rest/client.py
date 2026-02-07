@@ -104,6 +104,15 @@ async def execute_request(
     request_headers = {"Accept": "application/json"}
     if headers:
         request_headers.update(headers)
+    # Log request details without leaking header values (e.g., auth tokens).
+    logger.info(
+        "REST request resolved: method=%s base_url=%s path=%s url=%s header_keys=%s",
+        method,
+        base_url,
+        path,
+        url,
+        sorted(request_headers.keys()),
+    )
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:

@@ -36,7 +36,8 @@ async def _inject_turn(call_data: CallModelData) -> ModelInputData:
     """Inject turn count into instructions before each LLM call."""
     increment_turn()
     turn_info = get_turn_context(settings.MAX_AGENT_TURNS)
-    call_data.model_data.instructions += f"\n\n{turn_info}"
+    existing_instructions = call_data.model_data.instructions or ""
+    call_data.model_data.instructions = f"{existing_instructions}\n\n{turn_info}"
     return call_data.model_data
 
 

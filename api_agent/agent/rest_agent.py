@@ -538,14 +538,18 @@ def _create_individual_recipe_tools(
         tool_name = deduplicate_tool_name(s.get("tool_name", "unknown_recipe"), seen_names)
         params_spec = recipe.get("params", {})
         docstring = build_recipe_docstring(
-            s["question"], recipe.get("steps", []), recipe.get("sql_steps", [])
+            s["question"], recipe.get("steps", []), recipe.get("sql_steps", []),
+            params_spec=params_spec,
         )
 
         def make_tool(rid: str, pspec: dict[str, Any], doc: str, tname: str):
             ParamsModel = create_params_model(pspec, tname)
 
-            async def dynamic_recipe_tool(params: ParamsModel, return_directly: bool = True) -> str:
-                kwargs = params.model_dump() if hasattr(params, "model_dump") else params.dict()
+            async def dynamic_recipe_tool(
+                params: ParamsModel,
+                return_directly: bool = True,
+            ) -> str:
+                kwargs = params.model_dump()
                 validated_params, error = validate_recipe_params(pspec, kwargs)
                 if error:
                     return error
@@ -614,6 +618,8 @@ def _create_individual_recipe_tools(
                     return True, tables.get(name), "", call_rec
 
                 executed_calls: list[dict[str, Any]] = []
+                if recipe is None or validated_params is None:
+                    return json.dumps({"success": False, "error": "recipe validation failed"})
                 success, last_data, executed_sql, error = await execute_recipe_steps(
                     recipe,
                     validated_params,
@@ -696,7 +702,9 @@ async def process_rest_query(question: str, ctx: RequestContext) -> dict[str, An
             api_id = build_api_id(ctx, "rest", base_url)
             suggestions, recipe_context = search_recipes(api_id, raw_schema, question)
             if suggestions:
-                _log(f"PRE-FLIGHT found={len(suggestions)} ids={[s['recipe_id'] for s in suggestions]}")
+                _log(
+                    f"PRE-FLIGHT found={len(suggestions)} ids={[s['recipe_id'] for s in suggestions]}"
+                )
             elif raw_schema:
                 _log(f"PRE-FLIGHT no matches for api_id={api_id[:50]}")
 

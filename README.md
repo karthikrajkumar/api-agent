@@ -6,13 +6,13 @@ Point at any GraphQL or REST API. Ask questions in natural language. The agent f
 
 ## What Makes It Different
 
-**🎯 Zero config.** No custom MCP code per API. Point at a GraphQL endpoint or OpenAPI spec—agent introspects schema automatically.
+**🎯 Zero config.** No custom MCP code per API. Point at a GraphQL endpoint or OpenAPI spec — schema introspected automatically.
 
-**✨ SQL post-processing.** API returns 10,000 unsorted rows? Agent ranks top 10. No GROUP BY? Agent aggregates. Need JOINs across endpoints? Agent combines. The API doesn't need to support it—the agent does.
+**✨ SQL post-processing.** API returns 10,000 unsorted rows? Agent ranks top 10. No GROUP BY? Agent aggregates. Need JOINs across endpoints? Agent combines.
 
 **🔒 Safe by default.** Read-only. Mutations blocked unless explicitly allowed.
 
-**🧠 Recipe learning.** Agent learns from successful queries. Ask once, reuse cached pipelines execute instantly without LLM reasoning.
+**🧠 Recipe learning.** Successful queries become cached pipelines. Reuse instantly without LLM reasoning.
 
 ## Quick Start
 
@@ -106,7 +106,7 @@ That's it. Agent introspects schema, generates queries, runs SQL post-processing
 
 ### MCP Tools
 
-2 tools exposed per API:
+**Core tools** (2 per API):
 
 | Tool               | Input                                                          | Output                          |
 | ------------------ | -------------------------------------------------------------- | ------------------------------- |
@@ -114,6 +114,14 @@ That's it. Agent introspects schema, generates queries, runs SQL post-processing
 | `{prefix}_execute` | GraphQL: `query`, `variables` / REST: `method`, `path`, params | `{ok, data}`                    |
 
 Tool names auto-generated from URL (e.g., `example_query`). Override with `X-API-Name`.
+
+**Recipe tools** (dynamic, added as recipes are learned):
+
+| Tool               | Input                              | Output |
+| ------------------ | ---------------------------------- | ------ |
+| `r_{recipe_slug}`  | flat recipe-specific params, `return_directly` (bool) | CSV or `{ok, data, executed_queries/calls}` |
+
+Cached pipelines, no LLM reasoning. Appear after successful queries. Clients notified via `tools/list_changed`.
 
 ### Configuration
 
@@ -160,6 +168,7 @@ flowchart TB
     subgraph MCP["MCP Server (FastMCP)"]
         Q["{prefix}_query"]
         E["{prefix}_execute"]
+        R["r_{recipe} (dynamic)"]
     end
 
     subgraph Agent["Agents (OpenAI Agents SDK)"]
@@ -176,6 +185,8 @@ flowchart TB
     Q -->|graphql| GA
     Q -->|rest| RA
     E --> HTTP
+    R -->|"no LLM"| HTTP
+    R --> Duck
     GA --> HTTP
     RA --> HTTP
     GA --> Duck
@@ -189,42 +200,36 @@ flowchart TB
 
 ## Recipe Learning
 
-Agent automatically learns reusable patterns from successful queries. When you ask a question, the agent:
+Agent learns reusable patterns from successful queries:
 
-1. **Executes** - Runs API calls + SQL post-processing via LLM reasoning
-2. **Extracts** - LLM converts execution trace into parameterized template
-3. **Caches** - Stores recipe keyed by (API, schema hash) with fuzzy question matching
-4. **Reuses** - Similar future questions execute cached recipe instantly (no LLM reasoning)
+1. **Executes** — API calls + SQL via LLM reasoning
+2. **Extracts** — LLM converts trace into parameterized template
+3. **Caches** — Stores recipe keyed by (API, schema hash)
+4. **Exposes** — Recipe becomes MCP tool (`r_{name}`) callable without LLM
 
 ```mermaid
 flowchart LR
-    subgraph First["First Query"]
+    subgraph First["First Query via {prefix}_query"]
         Q1["'Top 5 users by age'"]
         A1["Agent reasons"]
         E1["API + SQL"]
         R1["Recipe extracted"]
     end
 
-    subgraph Cache["Recipe Cache"]
-        T["Template:<br/>LIMIT {{limit}}"]
+    subgraph Tools["MCP Tools"]
+        T["r_get_top_users<br/>params: {limit}"]
     end
 
-    subgraph Reuse["Similar Query"]
-        Q2["'Top 10 users by age'"]
-        M["Fuzzy match"]
+    subgraph Reuse["Direct Call"]
+        Q2["r_get_top_users({limit: 10})"]
         X["Execute directly"]
     end
 
     Q1 --> A1 --> E1 --> R1 --> T
-    Q2 --> M --> T --> X
+    Q2 --> T --> X
 ```
 
-**Recipe structure:**
-- **GraphQL**: `query_template` with `{{param}}` placeholders
-- **REST**: `path_params`, `query_params`, `body` with `{"$param": "name"}` refs
-- **SQL**: `{{param}}` in SQL strings
-
-Recipes auto-expire when schema changes (hash mismatch). Disable with `API_AGENT_ENABLE_RECIPES=false`.
+Recipes auto-expire on schema changes. Disable with `API_AGENT_ENABLE_RECIPES=false`.
 
 ---
 
@@ -234,9 +239,11 @@ Recipes auto-expire when schema changes (hash mismatch). Disable with `API_AGENT
 git clone https://github.com/agoda-com/api-agent.git
 cd api-agent
 uv sync --group dev
-uv run pytest tests/ -v
+uv run pytest tests/ -v      # Tests
+uv run ruff check api_agent/  # Lint
+uv run ty check               # Type check
 ```
 
 ## Observability
 
-OpenTelemetry tracing auto-enabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Works with Jaeger, Zipkin, Grafana Tempo, Arize Phoenix.
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to enable OpenTelemetry tracing. Works with Jaeger, Zipkin, Grafana Tempo, Arize Phoenix.

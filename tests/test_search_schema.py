@@ -152,7 +152,9 @@ class TestSearchSchema:
         assert len(result) <= 400
 
         header = result.split("\n")[0]
-        showing = int(re.search(r"showing (\d+)", header).group(1))
+        match = re.search(r"showing (\d+)", header)
+        assert match is not None
+        showing = int(match.group(1))
         next_offset = showing
         assert f"offset={next_offset}" in result
 

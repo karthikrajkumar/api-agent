@@ -8,7 +8,7 @@ from typing import Any
 
 from agents import Agent, Runner
 
-from .store import normalize_ws, params_with_defaults, render_param_refs, render_text_template
+from .store import get_example_values, normalize_ws, render_param_refs, render_text_template
 
 _EXTRACTOR_INSTRUCTIONS = """You are a recipe extractor. Convert executed API calls into reusable templates.
 
@@ -17,6 +17,7 @@ INPUT:
 - question: user's question
 - steps: executed API calls (preserve order)
 - sql_steps: executed SQL queries (preserve order)
+- existing_recipes: list of existing recipes for this API/schema (tool_name, question, steps, sql_steps, params)
 
 OUTPUT: Single JSON object (no markdown):
 {
@@ -32,6 +33,8 @@ TOOL_NAME REQUIREMENTS:
 - Start with a verb (get, list, fetch, find, search, etc.)
 - Descriptive but concise (e.g., "get_recent_users" not "get_all_users_who_registered_recently")
 - No special characters, only letters, numbers, underscores
+- If an existing recipe already matches this execution, reuse its tool_name.
+- Otherwise choose a tool_name not in existing_recipes.
 
 STEP FORMATS:
 - GraphQL: {"kind": "graphql", "name": "...", "query_template": "...{{param}}..."}
@@ -80,7 +83,7 @@ def _parse_json_maybe(text: str) -> dict[str, Any] | None:
 
 
 def _get_params_defaults(params_spec: dict[str, Any] | None) -> dict[str, Any]:
-    return params_with_defaults(params_spec or {}, {})
+    return get_example_values(params_spec or {}, {})
 
 
 def _canon_obj(v: Any) -> Any:
@@ -199,6 +202,7 @@ async def extract_recipe(
     question: str,
     steps: list[dict[str, Any]],
     sql_steps: list[str],
+    existing_recipes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Extract parameterized recipe from execution trace. Returns recipe or None."""
     from ..agent.model import get_run_config, model
@@ -215,6 +219,7 @@ async def extract_recipe(
         "question": question,
         "steps": steps,
         "sql_steps": sql_steps,
+        "existing_recipes": existing_recipes or [],
     }
 
     result = await Runner.run(

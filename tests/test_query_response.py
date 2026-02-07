@@ -4,7 +4,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from api_agent.tools.query import _build_response, _to_csv
+from api_agent.tools.query import _build_response
+from api_agent.utils.csv import to_csv
 
 
 @pytest.fixture
@@ -104,12 +105,12 @@ class TestBuildResponse:
 
 
 class TestToCsv:
-    """Tests for _to_csv function."""
+    """Tests for to_csv function."""
 
     def test_list_to_csv(self):
         """List converts to CSV with header."""
         data = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
-        result = _to_csv(data)
+        result = to_csv(data)
 
         lines = result.strip().splitlines()
         assert len(lines) == 3
@@ -120,7 +121,7 @@ class TestToCsv:
     def test_single_object_to_csv(self):
         """Single object converts to single row CSV."""
         data = {"id": 1, "name": "test"}
-        result = _to_csv(data)
+        result = to_csv(data)
 
         lines = result.strip().splitlines()
         assert len(lines) == 2
@@ -129,16 +130,16 @@ class TestToCsv:
 
     def test_empty_list_to_csv(self):
         """Empty list returns empty string."""
-        assert _to_csv([]) == ""
+        assert to_csv([]) == ""
 
     def test_empty_none_to_csv(self):
         """None returns empty string."""
-        assert _to_csv(None) == ""
+        assert to_csv(None) == ""
 
     def test_nested_objects_to_csv(self):
         """Nested objects get flattened by DuckDB."""
         data = [{"user": {"id": 1, "name": "a"}}, {"user": {"id": 2, "name": "b"}}]
-        result = _to_csv(data)
+        result = to_csv(data)
 
         lines = result.strip().splitlines()
         assert len(lines) == 3

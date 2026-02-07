@@ -1,50 +1,16 @@
 """Unified MCP tool for natural language API queries."""
 
-import csv
-import io
-import json
-import os
-import tempfile
-from typing import Annotated, Any
+from typing import Annotated
 
-import duckdb
 from fastmcp import FastMCP
+from fastmcp.server.context import Context
 from pydantic import Field
 
 from ..agent.graphql_agent import process_query
 from ..agent.rest_agent import process_rest_query
 from ..context import MissingHeaderError, get_request_context
-
-
-def _to_csv(data: Any) -> str:
-    """Convert data to CSV via DuckDB."""
-    if not data:
-        return ""
-    if not isinstance(data, list):
-        data = [data]
-
-    temp_file = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(data, f)
-            temp_file = f.name
-
-        conn = duckdb.connect()
-        conn.execute(f"CREATE TABLE t AS SELECT * FROM read_json_auto('{temp_file}')")
-        result = conn.execute("SELECT * FROM t")
-
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow([desc[0] for desc in result.description])
-        writer.writerows(result.fetchall())
-        conn.close()
-        return output.getvalue()
-    finally:
-        if temp_file:
-            try:
-                os.unlink(temp_file)
-            except OSError:
-                pass
+from ..recipe import consume_recipe_changes, reset_recipe_change_flag
+from ..utils.csv import to_csv
 
 
 def _build_response(result: dict, calls_key: str, ctx) -> dict:
@@ -74,21 +40,34 @@ Returns answer and the queries/calls made (reusable with execute tool).""",
     )
     async def query(
         question: Annotated[str, Field(description="Natural language question about the API")],
+        ctx: Context | None = None,
     ) -> dict | str:
         """Process natural language query against configured API."""
         try:
-            ctx = get_request_context()
+            req_ctx = get_request_context()
         except MissingHeaderError as e:
             return {"ok": False, "error": str(e)}
 
-        if ctx.api_type == "graphql":
-            result = await process_query(question, ctx)
+        # Track recipe creation in this request
+        reset_recipe_change_flag()
+
+        if req_ctx.api_type == "graphql":
+            result = await process_query(question, req_ctx)
         else:
-            result = await process_rest_query(question, ctx)
+            result = await process_rest_query(question, req_ctx)
+
+        # Notify clients if recipes changed
+        if ctx and consume_recipe_changes():
+            try:
+                await ctx.send_tool_list_changed()
+            except Exception:
+                pass
 
         # Direct return: just CSV, no wrapper
         if result.get("result") is not None and result.get("data") is None:
-            return _to_csv(result["result"])
+            return to_csv(result["result"])
 
-        calls_key = "queries" if ctx.api_type == "graphql" else "api_calls"
-        return _build_response(result, calls_key, ctx)
+        calls_key = "queries" if req_ctx.api_type == "graphql" else "api_calls"
+        response = _build_response(result, calls_key, req_ctx)
+
+        return response

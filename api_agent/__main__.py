@@ -1,6 +1,7 @@
 """API Agent MCP Server - Universal GraphQL/REST to MCP gateway."""
 
 import logging
+from typing import Literal, cast
 
 import uvicorn
 from fastmcp import FastMCP
@@ -29,7 +30,7 @@ def create_app():
     cors_origins = [o.strip() for o in settings.CORS_ALLOWED_ORIGINS.split(",")]
     middleware = [
         Middleware(
-            CORSMiddleware,
+            CORSMiddleware,  # type: ignore[arg-type]  # Starlette middleware typing
             allow_origins=cors_origins,
             allow_methods=["GET", "POST", "OPTIONS"],
             allow_headers=["*"],
@@ -44,7 +45,8 @@ def create_app():
         ),
     ]
 
-    app = mcp.http_app(middleware=middleware, transport=settings.TRANSPORT)
+    transport = cast(Literal["http", "streamable-http", "sse"], settings.TRANSPORT)
+    app = mcp.http_app(middleware=middleware, transport=transport)
 
     async def health(request):
         return JSONResponse({"status": "ok"})

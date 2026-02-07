@@ -58,7 +58,7 @@ def test_validate_recipe_params_success():
         "user_id": {"type": "int", "default": 123},
         "limit": {"type": "int", "default": 10},
     }
-    provided = {"user_id": 456}
+    provided = {"user_id": 456, "limit": 10}
     params, error = validate_recipe_params(params_spec, provided)
     assert error == ""
     assert params == {"user_id": 456, "limit": 10}
@@ -82,7 +82,7 @@ def test_validate_recipe_params_with_defaults():
         "user_id": {"type": "int", "default": 123},
         "query": {"type": "str", "default": "test"},
     }
-    provided = {"query": "custom"}
+    provided = {"user_id": 123, "query": "custom"}
     params, error = validate_recipe_params(params_spec, provided)
     assert error == ""
     assert params == {"user_id": 123, "query": "custom"}
@@ -98,14 +98,14 @@ def test_validate_recipe_params_empty_spec():
 
 
 def test_validate_recipe_params_extra_provided():
-    """Test validation allows extra params."""
+    """Test validation rejects extra params."""
     params_spec = {
         "user_id": {"type": "int", "default": 123},
     }
     provided = {"user_id": 456, "extra": "ignored"}
     params, error = validate_recipe_params(params_spec, provided)
-    assert error == ""
-    assert params == {"user_id": 456, "extra": "ignored"}
+    assert params is None
+    assert "unexpected params: extra" in error
 
 
 # build_recipe_docstring tests
@@ -118,7 +118,6 @@ def test_build_recipe_docstring_rest_single_step():
     )
     assert "Get user data" in docstring
     assert "1 API call" in docstring
-    assert "return_directly" in docstring
 
 
 def test_build_recipe_docstring_graphql_multiple():

@@ -13,9 +13,84 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 from ..config import settings
 from ..executor import execute_sql, truncate_for_context
 from .extractor import extract_recipe
-from .store import RECIPE_STORE, params_with_defaults, render_text_template, sha256_hex
+from .store import RECIPE_STORE, render_text_template, sha256_hex
 
 logger = logging.getLogger(__name__)
+
+# Mapping from recipe param type names to JSON Schema type names
+_JSON_TYPE_NAMES = {"str": "string", "int": "integer", "float": "number", "bool": "boolean"}
+
+# Track recipe changes per-request for tool list changed notifications
+_recipes_changed: ContextVar[list[str]] = ContextVar("recipes_changed")
+
+
+def reset_recipe_change_flag() -> None:
+    """Reset recipe change tracking for the current request."""
+    _recipes_changed.set([])
+
+
+def mark_recipe_changed(recipe_id: str) -> None:
+    """Record that a recipe was created during the current request."""
+    try:
+        _recipes_changed.get().append(recipe_id)
+    except LookupError:
+        _recipes_changed.set([recipe_id])
+
+
+def consume_recipe_changes() -> list[str]:
+    """Consume and clear recipe change tracking."""
+    try:
+        changes = list(_recipes_changed.get())
+    except LookupError:
+        return []
+    _recipes_changed.set([])
+    return changes
+
+
+def _normalize_ws_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return re.sub(r"\s+", " ", value).strip()
+    return value
+
+
+def _recipes_equivalent(existing: dict[str, Any], candidate: dict[str, Any], api_type: str) -> bool:
+    """Check if two recipes are equivalent for the same API type."""
+    if existing.get("params", {}) != candidate.get("params", {}):
+        return False
+
+    e_steps = existing.get("steps", [])
+    c_steps = candidate.get("steps", [])
+    e_sql = existing.get("sql_steps", [])
+    c_sql = candidate.get("sql_steps", [])
+    if not (isinstance(e_steps, list) and isinstance(c_steps, list)):
+        return False
+    if not (isinstance(e_sql, list) and isinstance(c_sql, list)):
+        return False
+    if len(e_steps) != len(c_steps) or len(e_sql) != len(c_sql):
+        return False
+
+    for e_step, c_step in zip(e_steps, c_steps):
+        if not (isinstance(e_step, dict) and isinstance(c_step, dict)):
+            return False
+        if e_step.get("kind") != c_step.get("kind"):
+            return False
+        if e_step.get("name") != c_step.get("name"):
+            return False
+        if api_type == "graphql":
+            if _normalize_ws_value(e_step.get("query_template")) != _normalize_ws_value(
+                c_step.get("query_template")
+            ):
+                return False
+        else:
+            for key in ("method", "path", "path_params", "query_params", "body"):
+                if e_step.get(key) != c_step.get(key):
+                    return False
+
+    for e_sql_step, c_sql_step in zip(e_sql, c_sql):
+        if _normalize_ws_value(e_sql_step) != _normalize_ws_value(c_sql_step):
+            return False
+
+    return True
 
 
 async def maybe_extract_and_save_recipe(
@@ -48,23 +123,37 @@ async def maybe_extract_and_save_recipe(
 
     try:
         schema_hash = sha256_hex(raw_schema)
+        existing_recipes = RECIPE_STORE.list_recipes(api_id=api_id, schema_hash=schema_hash)
         recipe = await extract_recipe(
             api_type=api_type,
             question=question,
             steps=steps,
             sql_steps=sql_steps,
+            existing_recipes=existing_recipes,
         )
         if recipe:
+            # Skip if recipe already exists (same steps/sql/params)
+            for existing in existing_recipes:
+                if _recipes_equivalent(existing, recipe, api_type):
+                    return
+
+            # Ensure tool_name does not collide with existing recipes
+            seen: set[str] = {r["tool_name"] for r in existing_recipes if r.get("tool_name")}
+            recipe["tool_name"] = deduplicate_tool_name(
+                recipe.get("tool_name", ""), seen_names=seen, max_len=40
+            )
             tool_name = recipe.get("tool_name", "")
-            RECIPE_STORE.save_recipe(
+            recipe_id = RECIPE_STORE.save_recipe(
                 api_id=api_id,
                 schema_hash=schema_hash,
                 question=question,
                 recipe=recipe,
                 tool_name=tool_name,
             )
+            mark_recipe_changed(recipe_id)
     except Exception:
         logger.exception("Recipe extraction failed")
+
 
 # Shared ContextVar for direct return signaling
 _return_directly_flag: ContextVar[list[bool]] = ContextVar("return_directly_flag")
@@ -91,7 +180,11 @@ def _tools_to_final_output(
 
 
 def build_recipe_docstring(
-    question: str, steps: list, sql_steps: list, api_type: str = "rest"
+    question: str,
+    steps: list,
+    sql_steps: list,
+    api_type: str = "rest",
+    params_spec: dict[str, Any] | None = None,
 ) -> str:
     """Build docstring for recipe tool."""
     parts = []
@@ -105,39 +198,59 @@ def build_recipe_docstring(
         parts.append(f"{len(sql_steps)} SQL step{'s' if len(sql_steps) > 1 else ''}")
     steps_summary = " + ".join(parts) if parts else "No steps"
 
-    return f"""Execute recipe: {question}
+    params_section = ""
+    if params_spec:
+        param_lines = []
+        for pname, spec in params_spec.items():
+            ptype = _JSON_TYPE_NAMES.get(spec.get("type", "str") if isinstance(spec, dict) else "str", "string")
+            example = spec.get("default") if isinstance(spec, dict) else None
+            hint = f" (e.g. {example})" if example is not None else ""
+            param_lines.append(f"  {pname}: {ptype} REQUIRED{hint}")
+        params_section = "\nRequired params:\n" + "\n".join(param_lines)
 
-        Recipe performs: {steps_summary}
-
-        Args:
-            return_directly: If confident in recipe output, keep True (default). Set False if you need to verify/process results.
-        """
+    return f"Execute recipe: {question}\nRecipe performs: {steps_summary}{params_section}"
 
 
 def create_params_model(pspec: dict[str, Any], tname: str):
-    """Create Pydantic model for recipe params with strict validation."""
+    """Create Pydantic model for recipe params with strict validation.
+
+    All fields are required (no defaults). Stored defaults are example values
+    from the original execution and are shown as description hints only.
+    """
 
     class StrictBase(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
     type_map = {"str": str, "int": int, "float": float, "bool": bool}
-    field_defs = {
-        pname: (type_map.get(pinfo.get("type", "str"), str), Field(default=pinfo.get("default")))
-        for pname, pinfo in pspec.items()
-    }
+    field_defs = {}
+    for pname, pinfo in pspec.items():
+        py_type = type_map.get(pinfo.get("type", "str"), str)
+        example = pinfo.get("default")
+        desc = f"Required. e.g. {example}" if example is not None else "Required"
+        field_defs[pname] = (py_type, Field(..., description=desc))
 
     return create_model(f"{tname}_Params", __base__=StrictBase, **field_defs)
 
 
-def deduplicate_tool_name(base_name: str, seen_names: set[str]) -> str:
-    """Ensure unique tool name by appending counter if needed."""
-    tool_name = base_name
+def deduplicate_tool_name(base_name: str, seen_names: set[str], max_len: int = 40) -> str:
+    """Ensure unique tool name within length limit."""
+    base = re.sub(r"[^a-z0-9_]", "", base_name)[:max_len]
+    if not base or not re.match(r"^[a-z][a-z0-9_]*$", base):
+        base = "recipe"
+
+    if base not in seen_names:
+        seen_names.add(base)
+        return base
+
     counter = 2
-    while tool_name in seen_names:
-        tool_name = f"{base_name}_{counter}"
+    while True:
+        suffix = f"_{counter}"
+        trimmed = base[: max_len - len(suffix)]
+        candidate = f"{trimmed}{suffix}"
+        if candidate not in seen_names:
+            seen_names.add(candidate)
+            return candidate
         counter += 1
-    seen_names.add(tool_name)
-    return tool_name
 
 
 def _execute_sql_steps(
@@ -327,7 +440,7 @@ def build_recipe_context(suggestions: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _error_json(msg: str) -> str:
+def error_json(msg: str) -> str:
     """Build JSON error response."""
     return json.dumps({"success": False, "error": msg}, indent=2)
 
@@ -343,20 +456,23 @@ def validate_and_prepare_recipe(
     except LookupError:
         raw_schema = ""
     if not raw_schema:
-        return None, None, _error_json("schema not loaded")
+        return None, None, error_json("schema not loaded")
 
     recipe = RECIPE_STORE.get_recipe(recipe_id)
     if not recipe:
-        return None, None, _error_json(f"recipe not found: {recipe_id}")
+        return None, None, error_json(f"recipe not found: {recipe_id}")
 
     provided: dict[str, Any] = {}
     if params_json:
         try:
             provided = json.loads(params_json)
         except json.JSONDecodeError as e:
-            return None, None, _error_json(f"invalid params_json: {e.msg}")
+            return None, None, error_json(f"invalid params_json: {e.msg}")
 
-    return recipe, params_with_defaults(recipe.get("params"), provided), ""
+    validated, err = validate_recipe_params(recipe.get("params", {}), provided)
+    if err:
+        return None, None, err
+    return recipe, validated, ""
 
 
 def validate_recipe_params(
@@ -364,14 +480,18 @@ def validate_recipe_params(
     provided: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, str]:
     """Validate and merge recipe params. Returns (params, error_json)."""
-    # Check required params (no default)
-    for pname, spec in params_spec.items():
-        if isinstance(spec, dict) and spec.get("default") is None and pname not in provided:
-            return None, json.dumps(
-                {"success": False, "error": f"missing required param: {pname}"}, indent=2
-            )
+    # Reject unknown params
+    if params_spec:
+        extra = set(provided.keys()) - set(params_spec.keys())
+        if extra:
+            return None, error_json(f"unexpected params: {', '.join(sorted(extra))}")
 
-    return params_with_defaults(params_spec, provided), ""
+    # All declared params are required (defaults are example values, not fallbacks)
+    for pname, spec in params_spec.items():
+        if pname not in provided:
+            return None, error_json(f"missing required param: {pname}")
+
+    return dict(provided), ""
 
 
 def _sanitize_for_tool_name(question: str) -> str:

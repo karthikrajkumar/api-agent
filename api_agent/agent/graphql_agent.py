@@ -259,6 +259,21 @@ async def _fetch_schema_context(endpoint: str, headers: dict[str, str] | None) -
     return context
 
 
+async def fetch_graphql_schema_raw(endpoint: str, headers: dict[str, str] | None) -> str:
+    """Fetch raw GraphQL schema JSON for matching and validation."""
+    result = await graphql_fetch(_INTROSPECTION_QUERY, None, endpoint, headers)
+
+    if not result.get("success") and _is_depth_limit_error(result):
+        logger.info("Full introspection failed (depth limit), retrying with shallow query")
+        result = await graphql_fetch(_INTROSPECTION_QUERY_SHALLOW, None, endpoint, headers)
+
+    if not result.get("success") or not result.get("data"):
+        return ""
+
+    schema = result["data"]["__schema"]
+    return json.dumps(schema, indent=2)
+
+
 def _build_system_prompt(recipe_context: str = "") -> str:
     """Build system prompt for GraphQL agent."""
     current_date = datetime.now().strftime("%Y-%m-%d")
@@ -448,14 +463,18 @@ def _create_individual_recipe_tools(
         tool_name = deduplicate_tool_name(s.get("tool_name", "unknown_recipe"), seen_names)
         params_spec = recipe.get("params", {})
         docstring = build_recipe_docstring(
-            s["question"], recipe.get("steps", []), recipe.get("sql_steps", []), "graphql"
+            s["question"], recipe.get("steps", []), recipe.get("sql_steps", []), "graphql",
+            params_spec=params_spec,
         )
 
         def make_tool(rid: str, pspec: dict[str, Any], doc: str, tname: str):
             ParamsModel = create_params_model(pspec, tname)
 
-            async def dynamic_recipe_tool(params: ParamsModel, return_directly: bool = True) -> str:
-                kwargs = params.model_dump() if hasattr(params, "model_dump") else params.dict()
+            async def dynamic_recipe_tool(
+                params: ParamsModel,
+                return_directly: bool = True,
+            ) -> str:
+                kwargs = params.model_dump()
                 validated_params, error = validate_recipe_params(pspec, kwargs)
                 if error:
                     return error
@@ -510,6 +529,8 @@ def _create_individual_recipe_tools(
                     return True, tables.get(str(name)), "", query
 
                 executed_queries: list[str] = []
+                if recipe is None or validated_params is None:
+                    return json.dumps({"success": False, "error": "recipe validation failed"})
                 success, last_data, executed_sql, error = await execute_recipe_steps(
                     recipe,
                     validated_params,
@@ -575,7 +596,9 @@ async def process_query(question: str, ctx: RequestContext) -> dict[str, Any]:
             api_id = build_api_id(ctx, "graphql")
             suggestions, recipe_context = search_recipes(api_id, raw_schema, question)
             if suggestions:
-                _log(f"PRE-FLIGHT found={len(suggestions)} ids={[s['recipe_id'] for s in suggestions]}")
+                _log(
+                    f"PRE-FLIGHT found={len(suggestions)} ids={[s['recipe_id'] for s in suggestions]}"
+                )
             elif raw_schema:
                 _log(f"PRE-FLIGHT no matches for api_id={api_id[:50]}")
 

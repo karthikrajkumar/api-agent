@@ -23,10 +23,12 @@ uv run pytest tests/test_foo.py -v   # Single test file
 uv run pytest tests/test_foo.py::test_bar -v  # Single test
 ```
 
-**Linting:**
+**Linting & Formatting:**
 ```bash
 uv run ruff check api_agent/
 uv run ruff check --fix api_agent/   # Auto-fix
+uv run ruff format api_agent/        # Format
+uv run ty check                      # Type check
 ```
 
 **Docker:**
@@ -77,8 +79,12 @@ docker run -p 3000:3000 -e OPENAI_API_KEY="..." api-agent
 - **api_agent/recipe/**: Parameterized pipeline caching
   - **store.py**: `RecipeStore` (LRU in-memory cache, thread-safe)
   - **extractor.py**: Extract reusable recipes from agent runs
-  - **tools.py**: Create dynamic MCP tools from recipes
+  - **runner.py**: Execute recipes outside agent context (for MCP tools)
   - **common.py**: Recipe validation, execution, parameter binding
+  - **naming.py**: Tool name sanitization
+
+- **api_agent/utils/**: Shared utilities
+  - **csv.py**: CSV conversion via DuckDB (for recipe `return_directly` output)
 
 - **api_agent/graphql/**: GraphQL client (httpx)
 - **api_agent/rest/**: REST client (httpx) + OpenAPI loader
@@ -96,9 +102,9 @@ Agents use **ContextVar** for request isolation: `_graphql_queries`, `_query_res
 ### Tool Naming
 
 Tools have internal names (`_query`, `_execute`) transformed by middleware per session:
-- **Format**: `{prefix}_query`, `{prefix}_execute`
-- **Prefix**: Extracted from hostname (e.g., `api.example.com/graphql` → `example`) or via `X-API-Name` header
+- **Format**: `{prefix}_query`, `{prefix}_execute` — prefix from hostname or `X-API-Name` header
 - Skips generic parts: TLDs, `api`, `qa`, `dev`, `internal`
+- **Recipe tools**: `r_{slug}` (not API-specific), max 60 chars; `send_tool_list_changed()` notifies clients
 
 ### Safety
 
@@ -114,23 +120,16 @@ Set `X-Poll-Paths` header to enable `poll_until_done` tool:
 
 ### Recipes
 
-Caches parameterized API call + SQL pipelines from successful agent runs:
+Caches parameterized API call + SQL pipelines from successful agent runs, exposed as MCP tools:
 
 ```
-Query → Agent executes → Extractor LLM → Recipe stored → Future match → Direct execute
+Query → Agent executes → Extractor LLM → Recipe stored → MCP tool `r_{name}` exposed
 ```
 
-- **Storage**: LRU in-memory (default 64 entries, `RECIPE_CACHE_SIZE`)
-- **Key**: `(api_id, schema_hash)` - auto-invalidates on schema change
-- **Matching**: Fuzzy question similarity via RapidFuzz token matching
-- **Templating**:
-  - GraphQL: `{{param}}` in `query_template`
-  - REST: `{"$param": "name"}` in `path_params`, `query_params`, `body`
-  - SQL: `{{param}}` in SQL strings
-- **Validation**: Recipe must render back to original execution (roundtrip check)
+- **Storage**: LRU in-memory (default 64 entries), keyed by `(api_id, schema_hash)` - auto-invalidates on schema change
+- **Deduplication**: Skips equivalent recipes, ensures unique tool names
+- **Templating**: GraphQL `{{param}}`, REST `{"$param": "name"}`, SQL `{{param}}`
 - **Config**: `ENABLE_RECIPES` (default: True), `RECIPE_CACHE_SIZE` (default: 64)
-
-Key files: `store.py` (LRU cache), `extractor.py` (LLM extraction), `common.py` (execution)
 
 ## Testing Notes
 

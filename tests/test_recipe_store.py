@@ -6,11 +6,12 @@ from api_agent.recipe import (
     RECIPE_STORE,
     RecipeStore,
     build_recipe_context,
-    params_with_defaults,
+    get_example_values,
     render_param_refs,
     render_text_template,
 )
 from api_agent.recipe.extractor import _find_used_params, _validate_equivalence
+from api_agent.recipe.store import sha256_hex
 
 
 def test_render_text_template_basic():
@@ -19,25 +20,31 @@ def test_render_text_template_basic():
     assert render_text_template("v={{x}}", {"x": None}) == "v=null"
 
 
+def test_sha256_hex_normalizes_json():
+    a = '{"b": 1, "a": 2}'
+    b = '{"a": 2, "b": 1}'
+    assert sha256_hex(a) == sha256_hex(b)
+
+
 def test_render_param_refs_nested():
     obj = {"a": {"$param": "x"}, "b": [{"$param": "y"}], "c": 3}
     out = render_param_refs(obj, {"x": 1, "y": "foo"})
     assert out == {"a": 1, "b": ["foo"], "c": 3}
 
 
-def test_params_with_defaults():
+def test_get_example_values():
     spec = {"limit": {"type": "int", "default": 10}, "q": {"type": "str"}}
-    params = params_with_defaults(spec, {"q": "abc"})
+    params = get_example_values(spec, {"q": "abc"})
     assert params == {"limit": 10, "q": "abc"}
 
 
-def test_params_with_defaults_none_value():
+def test_get_example_values_none_value():
     """None defaults are included (not skipped)."""
     spec = {"id": {"type": "int", "default": None}, "limit": {"type": "int", "default": 10}}
-    params = params_with_defaults(spec, {})
+    params = get_example_values(spec, {})
     assert params == {"id": None, "limit": 10}
     # Provided value overrides None default
-    params2 = params_with_defaults(spec, {"id": 42})
+    params2 = get_example_values(spec, {"id": 42})
     assert params2 == {"id": 42, "limit": 10}
 
 
@@ -122,6 +129,29 @@ def test_render_text_template_missing_param_raises():
 
     with pytest.raises(KeyError):
         render_text_template("limit {{n}}", {})
+
+
+def test_validate_recipe_params_requires_all_params():
+    """All declared params are required (defaults are examples, not fallbacks)."""
+    from api_agent.recipe.common import validate_recipe_params
+
+    params_spec = {
+        "manager_name": {"type": "str", "default": "Alice Smith"},
+        "manager_email": {"type": "str", "default": "alice.smith@example.com"},
+    }
+    params, error = validate_recipe_params(params_spec, {"manager_name": "Bob Jones"})
+    assert params is None
+    assert "missing required param: manager_email" in error
+
+
+def test_validate_recipe_params_rejects_extra():
+    """Extra params are rejected even when spec is non-empty."""
+    from api_agent.recipe.common import validate_recipe_params
+
+    params_spec = {"limit": {"type": "int", "default": 10}}
+    params, error = validate_recipe_params(params_spec, {"limit": 5, "extra": "bad"})
+    assert params is None
+    assert "unexpected params: extra" in error
 
 
 def test_global_recipe_store_available():
@@ -662,3 +692,154 @@ async def test_execute_recipe_steps_api_failure():
     assert success is False
     assert executed_sql == []
     assert "api failed" in error
+
+
+# --- sanitize_tool_name tests ---
+
+
+class TestSanitizeToolName:
+    def test_basic(self):
+        from api_agent.recipe.naming import sanitize_tool_name
+
+        assert sanitize_tool_name("get_users") == "get_users"
+
+    def test_special_chars_stripped(self):
+        from api_agent.recipe.naming import sanitize_tool_name
+
+        assert sanitize_tool_name("get-users!@#v2") == "getusersv2"
+
+    def test_spaces_to_underscores(self):
+        from api_agent.recipe.naming import sanitize_tool_name
+
+        assert sanitize_tool_name("get users by name") == "get_users_by_name"
+
+    def test_empty_returns_recipe(self):
+        from api_agent.recipe.naming import sanitize_tool_name
+
+        assert sanitize_tool_name("") == "recipe"
+        assert sanitize_tool_name(None) == "recipe"
+
+    def test_uppercase_lowered(self):
+        from api_agent.recipe.naming import sanitize_tool_name
+
+        assert sanitize_tool_name("GetUsers") == "getusers"
+
+    def test_leading_trailing_underscores_stripped(self):
+        from api_agent.recipe.naming import sanitize_tool_name
+
+        assert sanitize_tool_name("  _hello_  ") == "hello"
+
+
+# --- _recipes_equivalent tests ---
+
+
+class TestRecipesEquivalent:
+    def test_identical_graphql(self):
+        from api_agent.recipe.common import _recipes_equivalent
+
+        r = {
+            "params": {"limit": {"type": "int"}},
+            "steps": [{"kind": "graphql", "name": "users", "query_template": "{ users }"}],
+            "sql_steps": ["SELECT * FROM users"],
+        }
+        assert _recipes_equivalent(r, dict(r), "graphql") is True
+
+    def test_whitespace_normalized_graphql(self):
+        from api_agent.recipe.common import _recipes_equivalent
+
+        a = {
+            "params": {},
+            "steps": [{"kind": "graphql", "name": "d", "query_template": "{  users\n{ id } }"}],
+            "sql_steps": [],
+        }
+        b = {
+            "params": {},
+            "steps": [{"kind": "graphql", "name": "d", "query_template": "{ users { id } }"}],
+            "sql_steps": [],
+        }
+        assert _recipes_equivalent(a, b, "graphql") is True
+
+    def test_different_params(self):
+        from api_agent.recipe.common import _recipes_equivalent
+
+        a = {"params": {"x": {"type": "int"}}, "steps": [], "sql_steps": []}
+        b = {"params": {"y": {"type": "int"}}, "steps": [], "sql_steps": []}
+        assert _recipes_equivalent(a, b, "graphql") is False
+
+    def test_different_step_count(self):
+        from api_agent.recipe.common import _recipes_equivalent
+
+        a = {
+            "params": {},
+            "steps": [{"kind": "graphql", "name": "a", "query_template": "q"}],
+            "sql_steps": [],
+        }
+        b = {"params": {}, "steps": [], "sql_steps": []}
+        assert _recipes_equivalent(a, b, "graphql") is False
+
+    def test_rest_step_fields(self):
+        from api_agent.recipe.common import _recipes_equivalent
+
+        base = {
+            "kind": "rest",
+            "name": "d",
+            "method": "GET",
+            "path": "/a",
+            "path_params": {},
+            "query_params": {},
+            "body": {},
+        }
+        a = {"params": {}, "steps": [base], "sql_steps": []}
+        b_step = {**base, "path": "/b"}
+        b = {"params": {}, "steps": [b_step], "sql_steps": []}
+        assert _recipes_equivalent(a, b, "rest") is False
+
+    def test_sql_whitespace_normalized(self):
+        from api_agent.recipe.common import _recipes_equivalent
+
+        a = {"params": {}, "steps": [], "sql_steps": ["SELECT *  FROM   t"]}
+        b = {"params": {}, "steps": [], "sql_steps": ["SELECT * FROM t"]}
+        assert _recipes_equivalent(a, b, "graphql") is True
+
+
+# --- recipe change tracking tests ---
+
+
+class TestRecipeChangeTracking:
+    def test_consume_empty(self):
+        from api_agent.recipe.common import consume_recipe_changes, reset_recipe_change_flag
+
+        reset_recipe_change_flag()
+        assert consume_recipe_changes() == []
+
+    def test_mark_and_consume(self):
+        from api_agent.recipe.common import (
+            consume_recipe_changes,
+            mark_recipe_changed,
+            reset_recipe_change_flag,
+        )
+
+        reset_recipe_change_flag()
+        mark_recipe_changed("r_1")
+        mark_recipe_changed("r_2")
+        changes = consume_recipe_changes()
+        assert changes == ["r_1", "r_2"]
+        # second consume should be empty
+        assert consume_recipe_changes() == []
+
+    def test_consume_without_reset(self):
+        """consume_recipe_changes works even without prior reset."""
+        import contextvars
+
+        from api_agent.recipe.common import consume_recipe_changes, mark_recipe_changed
+
+        # Force fresh ContextVar state by operating in a new context
+
+        ctx = contextvars.copy_context()
+
+        def _inner():
+            mark_recipe_changed("r_x")
+            return consume_recipe_changes()
+
+        result = ctx.run(_inner)
+        assert result == ["r_x"]

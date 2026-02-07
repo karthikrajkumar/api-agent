@@ -18,8 +18,8 @@ def mock_context():
         api_type="graphql",
         base_url=None,
         include_result=False,
-        allow_unsafe_paths=[],
-        poll_paths=[],
+        allow_unsafe_paths=(),
+        poll_paths=(),
     )
 
 
@@ -220,12 +220,9 @@ def test_recipe_tool_return_directly_default(mock_context, sample_recipe_suggest
         schema = tool.params_json_schema
         return_directly_param = schema["properties"]["return_directly"]
         assert return_directly_param["default"] is True
-        # Verify LLM guidance is in description
-        assert "confident" in return_directly_param["description"].lower()
-        assert (
-            "verify" in return_directly_param["description"].lower()
-            or "process" in return_directly_param["description"].lower()
-        )
+        # Verify required params are visible in description
+        desc = tool.description.lower()
+        assert "required" in desc
 
         # Verify tool name
         assert tool.name == "list_managers_starting_with_b"
@@ -243,8 +240,8 @@ def rest_context():
         api_type="rest",
         base_url="/v1",
         include_result=False,
-        allow_unsafe_paths=[],
-        poll_paths=[],
+        allow_unsafe_paths=(),
+        poll_paths=(),
     )
 
 

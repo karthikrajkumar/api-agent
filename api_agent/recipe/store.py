@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import threading
@@ -15,6 +16,7 @@ from typing import Any
 from rapidfuzz import fuzz
 
 from ..config import settings
+from .naming import sanitize_tool_name
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,15 @@ def _log_recipe(msg: str) -> None:
 
 
 def sha256_hex(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    """Hash text, normalizing JSON when possible for stable schema hashes."""
+    normalized = text
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if parsed is not None:
+        normalized = json.dumps(parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 _PLACEHOLDER_RE = re.compile(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}")
@@ -70,9 +80,14 @@ def render_param_refs(obj: Any, params: dict[str, Any]) -> Any:
     return obj
 
 
-def params_with_defaults(
+def get_example_values(
     params_spec: dict[str, Any] | None, provided: dict[str, Any] | None
 ) -> dict[str, Any]:
+    """Extract example values from param specs, overlaid with provided values.
+
+    Stored "default" values are examples from the original execution, not
+    runtime fallbacks.  Used by the extractor to verify template equivalence.
+    """
     out: dict[str, Any] = {}
     if isinstance(params_spec, dict):
         for pname, spec in params_spec.items():
@@ -110,7 +125,9 @@ def _similarity(query: str, signature: str) -> float:
     base = fuzz.token_set_ratio(q_text, s_text)
 
     partial_fn = getattr(fuzz, "partial_token_set_ratio", None)
-    extra = partial_fn(q_text, s_text) if callable(partial_fn) else fuzz.WRatio(q_text, s_text)
+    extra: float = (
+        partial_fn(q_text, s_text) if callable(partial_fn) else fuzz.WRatio(q_text, s_text)
+    )
 
     overlap = len(q_tokens & s_tokens) / max(len(q_tokens), 1)
     coverage = len(s_tokens & q_tokens) / max(len(s_tokens), 1)
@@ -238,6 +255,76 @@ class RecipeStore:
             matches = " ".join(f"{s['recipe_id']}({s['score']:.2f})" for s in out)
             _log_recipe(f"SUGGEST found={len(out)} [{matches}]")
         return out
+
+    def list_recipes(
+        self,
+        *,
+        api_id: str,
+        schema_hash: str,
+    ) -> list[dict[str, Any]]:
+        """List recipes for a given api_id + schema_hash."""
+        key = (api_id, schema_hash)
+        with self._lock:
+            ids = list(self._by_key.get(key, set()))
+            recs = [self._records[i] for i in ids if i in self._records]
+
+        recs.sort(key=lambda r: r.last_used_at, reverse=True)
+        out: list[dict[str, Any]] = []
+        for r in recs:
+            out.append(
+                {
+                    "recipe_id": r.recipe_id,
+                    "question": r.question,
+                    "tool_name": r.tool_name,
+                    "created_at": r.created_at,
+                    "last_used_at": r.last_used_at,
+                    "params": dict(r.recipe.get("params", {})),
+                    "steps": list(r.recipe.get("steps", [])),
+                    "sql_steps": list(r.recipe.get("sql_steps", [])),
+                }
+            )
+        return out
+
+    def find_recipe_by_tool_slug(
+        self,
+        *,
+        api_id: str,
+        schema_hash: str,
+        tool_slug: str,
+        max_slug_len: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Find the most recent recipe by tool_slug for an api_id + schema_hash."""
+        key = (api_id, schema_hash)
+        if not (isinstance(max_slug_len, int) and max_slug_len > 0):
+            max_slug_len = None
+
+        with self._lock:
+            ids = list(self._by_key.get(key, set()))
+            recs: list[RecipeRecord] = []
+            for i in ids:
+                rec = self._records.get(i)
+                if not rec:
+                    continue
+                slug = sanitize_tool_name(rec.tool_name)
+                if max_slug_len:
+                    slug = slug[:max_slug_len]
+                if slug == tool_slug:
+                    recs.append(rec)
+
+        if not recs:
+            return None
+        recs.sort(key=lambda r: (r.last_used_at, r.created_at), reverse=True)
+        r = recs[0]
+        return {
+            "recipe_id": r.recipe_id,
+            "question": r.question,
+            "tool_name": r.tool_name,
+            "created_at": r.created_at,
+            "last_used_at": r.last_used_at,
+            "params": dict(r.recipe.get("params", {})),
+            "steps": list(r.recipe.get("steps", [])),
+            "sql_steps": list(r.recipe.get("sql_steps", [])),
+        }
 
     def _touch(self, recipe_id: str) -> None:
         self._lru.pop(recipe_id, None)
