@@ -28,6 +28,12 @@ API Agent is a universal [Model Context Protocol (MCP)](https://modelcontextprot
 18. [Troubleshooting](#18-troubleshooting)
 19. [Architecture Overview](#19-architecture-overview)
 20. [Examples](#20-examples)
+21. [Programmatic Client Examples](#21-programmatic-client-examples)
+    - [Python](#211-python)
+    - [Node.js / TypeScript](#212-nodejs--typescript)
+    - [Java](#213-java)
+    - [REST API Adaptation](#214-rest-api-example-all-languages)
+    - [cURL Quick Reference](#215-curl-quick-reference)
 
 ---
 
@@ -1112,3 +1118,938 @@ This allows POST/PUT/DELETE on `/api/orders` and `/api/orders/{id}`, while all o
 ```
 
 The agent will automatically use `poll_until_done` for `/api/reports/generate` instead of a regular REST call.
+
+---
+
+## 21. Programmatic Client Examples
+
+API Agent uses the MCP protocol over **Streamable HTTP** (SSE). Below are complete, runnable examples in Python, Java, and Node.js showing how to:
+
+1. Initialize a session
+2. List available tools
+3. Ask a natural language question (`{prefix}_query`)
+4. Execute a direct API call (`{prefix}_execute`)
+
+All examples connect to `http://localhost:3000/mcp` and query the Rick & Morty GraphQL API.
+
+---
+
+### 21.1 Python
+
+**Requirements:** `pip install httpx` (or `pip install requests`)
+
+```python
+"""API Agent MCP Client — Python example using httpx."""
+
+import httpx
+import json
+
+MCP_URL = "http://localhost:3000/mcp"
+
+# Headers identifying the target API
+API_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+    "X-Target-URL": "https://rickandmortyapi.com/graphql",
+    "X-API-Type": "graphql",
+    # For authenticated APIs, add:
+    # "X-Target-Headers": json.dumps({"Authorization": "Bearer YOUR_TOKEN"}),
+}
+
+
+def parse_sse_response(response: httpx.Response) -> dict | None:
+    """Parse SSE response and extract the result from the last data event."""
+    for line in response.text.strip().splitlines():
+        if line.startswith("data:"):
+            return json.loads(line[5:])
+    # Non-SSE response (direct JSON)
+    try:
+        return response.json()
+    except Exception:
+        return None
+
+
+def mcp_request(session_id: str | None, method: str, params: dict = None, req_id: int = 1) -> tuple[dict, str]:
+    """Send an MCP JSON-RPC request and return (result, session_id)."""
+    headers = {**API_HEADERS}
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": method,
+    }
+    if params:
+        payload["params"] = params
+
+    with httpx.Client(timeout=120.0) as client:
+        resp = client.post(MCP_URL, json=payload, headers=headers)
+        resp.raise_for_status()
+
+        # Extract session ID from response headers
+        new_session_id = resp.headers.get("mcp-session-id", session_id)
+        data = parse_sse_response(resp)
+        return data, new_session_id
+
+
+def main():
+    # ── Step 1: Initialize session ──────────────────────────────────
+    print("1. Initializing MCP session...")
+    result, session_id = mcp_request(
+        session_id=None,
+        method="initialize",
+        params={
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "python-client", "version": "1.0"},
+        },
+    )
+    print(f"   Session ID: {session_id}")
+    print(f"   Server: {result.get('result', {}).get('serverInfo', {})}")
+
+    # ── Step 2: List available tools ────────────────────────────────
+    print("\n2. Listing tools...")
+    result, session_id = mcp_request(session_id, "tools/list", req_id=2)
+    tools = result.get("result", {}).get("tools", [])
+    for tool in tools:
+        print(f"   • {tool['name']}: {tool.get('description', '')[:80]}...")
+
+    # ── Step 3: Natural language query ──────────────────────────────
+    print("\n3. Asking: 'How many episodes are there in total?'")
+    result, session_id = mcp_request(
+        session_id,
+        "tools/call",
+        params={
+            "name": "rickandmortyapi_query",
+            "arguments": {
+                "question": "How many episodes are there in total?",
+            },
+        },
+        req_id=3,
+    )
+    # Extract structured content or text content
+    structured = result.get("result", {}).get("structuredContent")
+    if structured:
+        print(f"   Answer: {json.dumps(structured, indent=2)}")
+    else:
+        content = result.get("result", {}).get("content", [])
+        for c in content:
+            print(f"   Answer: {c.get('text', '')[:500]}")
+
+    # ── Step 4: Direct GraphQL execution ────────────────────────────
+    print("\n4. Direct execute: fetching first 5 characters...")
+    result, session_id = mcp_request(
+        session_id,
+        "tools/call",
+        params={
+            "name": "rickandmortyapi_execute",
+            "arguments": {
+                "query": "{ characters(page: 1) { results { name status species } } }",
+            },
+        },
+        req_id=4,
+    )
+    structured = result.get("result", {}).get("structuredContent")
+    if structured:
+        data = structured.get("data", {})
+        if isinstance(data, dict):
+            characters = data.get("characters", {}).get("results", [])[:5]
+            for ch in characters:
+                print(f"   • {ch['name']} ({ch['species']}) - {ch['status']}")
+        else:
+            print(f"   Data: {str(data)[:500]}")
+    else:
+        content = result.get("result", {}).get("content", [])
+        for c in content:
+            print(f"   {c.get('text', '')[:500]}")
+
+    print("\nDone!")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+#### Python — Async Version (with `httpx`)
+
+```python
+"""API Agent MCP Client — async Python example."""
+
+import asyncio
+import json
+import httpx
+
+MCP_URL = "http://localhost:3000/mcp"
+API_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+    "X-Target-URL": "https://rickandmortyapi.com/graphql",
+    "X-API-Type": "graphql",
+}
+
+
+class MCPClient:
+    """Simple MCP client for API Agent."""
+
+    def __init__(self, base_url: str = MCP_URL, api_headers: dict = None):
+        self.base_url = base_url
+        self.api_headers = api_headers or API_HEADERS
+        self.session_id: str | None = None
+        self._req_id = 0
+
+    async def _request(self, method: str, params: dict = None) -> dict:
+        self._req_id += 1
+        headers = {**self.api_headers}
+        if self.session_id:
+            headers["Mcp-Session-Id"] = self.session_id
+
+        payload = {"jsonrpc": "2.0", "id": self._req_id, "method": method}
+        if params:
+            payload["params"] = params
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(self.base_url, json=payload, headers=headers)
+            resp.raise_for_status()
+            self.session_id = resp.headers.get("mcp-session-id", self.session_id)
+
+            for line in resp.text.strip().splitlines():
+                if line.startswith("data:"):
+                    return json.loads(line[5:])
+            return resp.json()
+
+    async def initialize(self) -> dict:
+        """Initialize MCP session."""
+        result = await self._request("initialize", {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "python-async-client", "version": "1.0"},
+        })
+        return result.get("result", {})
+
+    async def list_tools(self) -> list[dict]:
+        """List available tools."""
+        result = await self._request("tools/list")
+        return result.get("result", {}).get("tools", [])
+
+    async def query(self, tool_name: str, question: str) -> dict:
+        """Ask a natural language question."""
+        result = await self._request("tools/call", {
+            "name": tool_name,
+            "arguments": {"question": question},
+        })
+        return result.get("result", {}).get("structuredContent") or result.get("result", {})
+
+    async def execute(self, tool_name: str, **kwargs) -> dict:
+        """Execute a direct API call."""
+        result = await self._request("tools/call", {
+            "name": tool_name,
+            "arguments": kwargs,
+        })
+        return result.get("result", {}).get("structuredContent") or result.get("result", {})
+
+
+async def main():
+    client = MCPClient()
+
+    # Initialize
+    info = await client.initialize()
+    print(f"Connected: {info.get('serverInfo', {}).get('name')}")
+
+    # List tools
+    tools = await client.list_tools()
+    print(f"Tools: {[t['name'] for t in tools]}")
+
+    # Natural language query
+    answer = await client.query("rickandmortyapi_query", "List all dead human characters")
+    print(f"Answer: {json.dumps(answer, indent=2)[:1000]}")
+
+    # Direct execution
+    data = await client.execute(
+        "rickandmortyapi_execute",
+        query="{ episodes(page: 1) { results { name episode air_date } } }",
+    )
+    print(f"Episodes: {json.dumps(data, indent=2)[:1000]}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+---
+
+### 21.2 Node.js / TypeScript
+
+**Requirements:** `npm install node-fetch` (Node 18+ has built-in fetch)
+
+```javascript
+/**
+ * API Agent MCP Client — Node.js example.
+ * Works with Node 18+ (built-in fetch) or install node-fetch for older versions.
+ */
+
+const MCP_URL = "http://localhost:3000/mcp";
+
+const API_HEADERS = {
+  "Content-Type": "application/json",
+  Accept: "application/json, text/event-stream",
+  "X-Target-URL": "https://rickandmortyapi.com/graphql",
+  "X-API-Type": "graphql",
+  // For authenticated APIs:
+  // "X-Target-Headers": JSON.stringify({ Authorization: "Bearer YOUR_TOKEN" }),
+};
+
+let sessionId = null;
+let reqId = 0;
+
+/**
+ * Parse SSE response body to extract JSON result.
+ */
+function parseSSE(body) {
+  for (const line of body.split("\n")) {
+    if (line.startsWith("data:")) {
+      return JSON.parse(line.slice(5));
+    }
+  }
+  return JSON.parse(body);
+}
+
+/**
+ * Send an MCP JSON-RPC request.
+ */
+async function mcpRequest(method, params = undefined) {
+  reqId++;
+  const headers = { ...API_HEADERS };
+  if (sessionId) {
+    headers["Mcp-Session-Id"] = sessionId;
+  }
+
+  const payload = { jsonrpc: "2.0", id: reqId, method };
+  if (params) payload.params = params;
+
+  const resp = await fetch(MCP_URL, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+  }
+
+  // Capture session ID
+  sessionId = resp.headers.get("mcp-session-id") || sessionId;
+
+  const body = await resp.text();
+  return parseSSE(body);
+}
+
+/**
+ * Extract answer from MCP tool call result.
+ */
+function extractAnswer(result) {
+  const structured = result?.result?.structuredContent;
+  if (structured) return structured;
+
+  const content = result?.result?.content;
+  if (Array.isArray(content)) {
+    return content.map((c) => c.text).join("\n");
+  }
+  return result;
+}
+
+async function main() {
+  // ── Step 1: Initialize ───────────────────────────────────────────
+  console.log("1. Initializing MCP session...");
+  const initResult = await mcpRequest("initialize", {
+    protocolVersion: "2025-03-26",
+    capabilities: {},
+    clientInfo: { name: "node-client", version: "1.0" },
+  });
+  console.log(`   Session: ${sessionId}`);
+  console.log(`   Server: ${JSON.stringify(initResult.result?.serverInfo)}`);
+
+  // ── Step 2: List tools ───────────────────────────────────────────
+  console.log("\n2. Listing tools...");
+  const toolsResult = await mcpRequest("tools/list");
+  const tools = toolsResult.result?.tools || [];
+  tools.forEach((t) => console.log(`   • ${t.name}`));
+
+  // ── Step 3: Natural language query ───────────────────────────────
+  console.log("\n3. Asking: 'How many episodes are there?'");
+  const queryResult = await mcpRequest("tools/call", {
+    name: "rickandmortyapi_query",
+    arguments: { question: "How many episodes are there in total?" },
+  });
+  const answer = extractAnswer(queryResult);
+  console.log(`   Answer: ${JSON.stringify(answer, null, 2).slice(0, 500)}`);
+
+  // ── Step 4: Direct execution ─────────────────────────────────────
+  console.log("\n4. Direct execute: first 5 characters...");
+  const execResult = await mcpRequest("tools/call", {
+    name: "rickandmortyapi_execute",
+    arguments: {
+      query: "{ characters(page: 1) { results { name status species } } }",
+    },
+  });
+  const execAnswer = extractAnswer(execResult);
+  const characters =
+    execAnswer?.data?.characters?.results?.slice(0, 5) || [];
+  characters.forEach((ch) =>
+    console.log(`   • ${ch.name} (${ch.species}) - ${ch.status}`)
+  );
+
+  // ── Step 5: Complex query with SQL post-processing ───────────────
+  console.log("\n5. Complex query: 'Count characters by species, top 5'");
+  const complexResult = await mcpRequest("tools/call", {
+    name: "rickandmortyapi_query",
+    arguments: {
+      question:
+        "Count characters per species and show the top 5 most common species",
+    },
+  });
+  const complexAnswer = extractAnswer(complexResult);
+  console.log(`   Answer: ${JSON.stringify(complexAnswer, null, 2).slice(0, 500)}`);
+
+  console.log("\nDone!");
+}
+
+main().catch(console.error);
+```
+
+#### Node.js — TypeScript Version with Class Wrapper
+
+```typescript
+/**
+ * API Agent MCP Client — TypeScript example.
+ * Usage: npx tsx client.ts
+ */
+
+interface MCPResult {
+  jsonrpc: string;
+  id: number;
+  result?: {
+    tools?: Array<{ name: string; description: string }>;
+    content?: Array<{ type: string; text: string }>;
+    structuredContent?: Record<string, unknown>;
+    serverInfo?: { name: string; version: string };
+  };
+  error?: { code: number; message: string };
+}
+
+interface MCPClientOptions {
+  baseUrl: string;
+  targetUrl: string;
+  apiType: "graphql" | "rest";
+  targetHeaders?: Record<string, string>;
+  apiName?: string;
+  baseUrlOverride?: string;
+}
+
+class MCPClient {
+  private baseUrl: string;
+  private headers: Record<string, string>;
+  private sessionId: string | null = null;
+  private reqId = 0;
+
+  constructor(options: MCPClientOptions) {
+    this.baseUrl = options.baseUrl;
+    this.headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "X-Target-URL": options.targetUrl,
+      "X-API-Type": options.apiType,
+    };
+    if (options.targetHeaders) {
+      this.headers["X-Target-Headers"] = JSON.stringify(options.targetHeaders);
+    }
+    if (options.apiName) {
+      this.headers["X-API-Name"] = options.apiName;
+    }
+    if (options.baseUrlOverride) {
+      this.headers["X-Base-URL"] = options.baseUrlOverride;
+    }
+  }
+
+  private async request(method: string, params?: Record<string, unknown>): Promise<MCPResult> {
+    this.reqId++;
+    const headers: Record<string, string> = { ...this.headers };
+    if (this.sessionId) headers["Mcp-Session-Id"] = this.sessionId;
+
+    const payload: Record<string, unknown> = { jsonrpc: "2.0", id: this.reqId, method };
+    if (params) payload.params = params;
+
+    const resp = await fetch(this.baseUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+
+    this.sessionId = resp.headers.get("mcp-session-id") || this.sessionId;
+
+    const body = await resp.text();
+    for (const line of body.split("\n")) {
+      if (line.startsWith("data:")) return JSON.parse(line.slice(5));
+    }
+    return JSON.parse(body);
+  }
+
+  async initialize(): Promise<MCPResult> {
+    return this.request("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "ts-client", version: "1.0" },
+    });
+  }
+
+  async listTools(): Promise<Array<{ name: string; description: string }>> {
+    const result = await this.request("tools/list");
+    return result.result?.tools || [];
+  }
+
+  async query(toolName: string, question: string): Promise<unknown> {
+    const result = await this.request("tools/call", {
+      name: toolName,
+      arguments: { question },
+    });
+    return result.result?.structuredContent || result.result;
+  }
+
+  async execute(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+    const result = await this.request("tools/call", {
+      name: toolName,
+      arguments: args,
+    });
+    return result.result?.structuredContent || result.result;
+  }
+}
+
+// ── Usage ──────────────────────────────────────────────────────────
+async function main() {
+  const client = new MCPClient({
+    baseUrl: "http://localhost:3000/mcp",
+    targetUrl: "https://rickandmortyapi.com/graphql",
+    apiType: "graphql",
+  });
+
+  await client.initialize();
+  console.log("Connected!");
+
+  const tools = await client.listTools();
+  console.log("Tools:", tools.map((t) => t.name));
+
+  const answer = await client.query(
+    "rickandmortyapi_query",
+    "What are the top 5 most common species?"
+  );
+  console.log("Answer:", JSON.stringify(answer, null, 2).slice(0, 1000));
+}
+
+main().catch(console.error);
+```
+
+---
+
+### 21.3 Java
+
+**Requirements:** Java 11+ (uses `java.net.http.HttpClient`). No external dependencies needed.
+
+```java
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * API Agent MCP Client — Java example.
+ * Uses only java.net.http (no external dependencies).
+ *
+ * Compile: javac MCPClient.java
+ * Run:     java MCPClient
+ */
+public class MCPClient {
+
+    private static final String MCP_URL = "http://localhost:3000/mcp";
+    private static final String TARGET_URL = "https://rickandmortyapi.com/graphql";
+    private static final String API_TYPE = "graphql";
+
+    private final HttpClient httpClient;
+    private final AtomicInteger reqId = new AtomicInteger(0);
+    private String sessionId = null;
+
+    public MCPClient() {
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+    }
+
+    /**
+     * Parse SSE response to extract JSON from "data:" lines.
+     */
+    private String parseSSE(String body) {
+        for (String line : body.split("\n")) {
+            if (line.startsWith("data:")) {
+                return line.substring(5).trim();
+            }
+        }
+        return body; // Not SSE, return as-is
+    }
+
+    /**
+     * Send MCP JSON-RPC request.
+     */
+    public String mcpRequest(String method, String params) throws Exception {
+        int id = reqId.incrementAndGet();
+
+        // Build JSON-RPC payload
+        StringBuilder payload = new StringBuilder();
+        payload.append("{\"jsonrpc\":\"2.0\",\"id\":").append(id);
+        payload.append(",\"method\":\"").append(method).append("\"");
+        if (params != null) {
+            payload.append(",\"params\":").append(params);
+        }
+        payload.append("}");
+
+        // Build request with headers
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                .uri(URI.create(MCP_URL))
+                .timeout(Duration.ofSeconds(120))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+                .header("X-Target-URL", TARGET_URL)
+                .header("X-API-Type", API_TYPE)
+                .POST(HttpRequest.BodyPublishers.ofString(payload.toString()));
+
+        if (sessionId != null) {
+            requestBuilder.header("Mcp-Session-Id", sessionId);
+        }
+
+        HttpResponse<String> response = httpClient.send(
+                requestBuilder.build(),
+                HttpResponse.BodyHandlers.ofString()
+        );
+
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("HTTP " + response.statusCode() + ": " + response.body());
+        }
+
+        // Extract session ID from response headers
+        response.headers().firstValue("mcp-session-id").ifPresent(id1 -> sessionId = id1);
+
+        return parseSSE(response.body());
+    }
+
+    public static void main(String[] args) throws Exception {
+        MCPClient client = new MCPClient();
+
+        // ── Step 1: Initialize session ────────────────────────────
+        System.out.println("1. Initializing MCP session...");
+        String initResult = client.mcpRequest("initialize",
+                "{" +
+                "\"protocolVersion\":\"2025-03-26\"," +
+                "\"capabilities\":{}," +
+                "\"clientInfo\":{\"name\":\"java-client\",\"version\":\"1.0\"}" +
+                "}"
+        );
+        System.out.println("   Session: " + client.sessionId);
+        System.out.println("   Response: " + initResult.substring(0, Math.min(200, initResult.length())));
+
+        // ── Step 2: List tools ────────────────────────────────────
+        System.out.println("\n2. Listing tools...");
+        String toolsResult = client.mcpRequest("tools/list", null);
+        System.out.println("   Tools: " + toolsResult.substring(0, Math.min(500, toolsResult.length())));
+
+        // ── Step 3: Natural language query ─────────────────────────
+        System.out.println("\n3. Asking: 'How many episodes are there?'");
+        String queryResult = client.mcpRequest("tools/call",
+                "{" +
+                "\"name\":\"rickandmortyapi_query\"," +
+                "\"arguments\":{\"question\":\"How many episodes are there in total?\"}" +
+                "}"
+        );
+        System.out.println("   Answer: " + queryResult.substring(0, Math.min(500, queryResult.length())));
+
+        // ── Step 4: Direct GraphQL execution ──────────────────────
+        System.out.println("\n4. Direct execute: fetching characters...");
+        String execResult = client.mcpRequest("tools/call",
+                "{" +
+                "\"name\":\"rickandmortyapi_execute\"," +
+                "\"arguments\":{" +
+                    "\"query\":\"{ characters(page: 1) { results { name status species } } }\"" +
+                "}" +
+                "}"
+        );
+        System.out.println("   Result: " + execResult.substring(0, Math.min(500, execResult.length())));
+
+        // ── Step 5: Complex query ─────────────────────────────────
+        System.out.println("\n5. Complex: 'Top 5 species by character count'");
+        String complexResult = client.mcpRequest("tools/call",
+                "{" +
+                "\"name\":\"rickandmortyapi_query\"," +
+                "\"arguments\":{\"question\":\"Count characters per species, show top 5 sorted by count\"}" +
+                "}"
+        );
+        System.out.println("   Answer: " + complexResult.substring(0, Math.min(500, complexResult.length())));
+
+        System.out.println("\nDone!");
+    }
+}
+```
+
+#### Java — With Jackson JSON Library (Cleaner)
+
+If you have Jackson on your classpath (e.g., Spring Boot projects):
+
+```java
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+
+/**
+ * API Agent MCP Client — Java + Jackson example.
+ */
+public class MCPClientJackson {
+
+    private static final String MCP_URL = "http://localhost:3000/mcp";
+    private static final ObjectMapper mapper = new ObjectMapper();
+
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .build();
+    private String sessionId;
+    private int reqId = 0;
+
+    // Configuration
+    private final String targetUrl;
+    private final String apiType;
+    private final String targetHeaders; // JSON string or null
+
+    public MCPClientJackson(String targetUrl, String apiType, String targetHeaders) {
+        this.targetUrl = targetUrl;
+        this.apiType = apiType;
+        this.targetHeaders = targetHeaders;
+    }
+
+    public JsonNode request(String method, JsonNode params) throws Exception {
+        reqId++;
+
+        ObjectNode payload = mapper.createObjectNode();
+        payload.put("jsonrpc", "2.0");
+        payload.put("id", reqId);
+        payload.put("method", method);
+        if (params != null) payload.set("params", params);
+
+        HttpRequest.Builder rb = HttpRequest.newBuilder()
+                .uri(URI.create(MCP_URL))
+                .timeout(Duration.ofSeconds(120))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+                .header("X-Target-URL", targetUrl)
+                .header("X-API-Type", apiType)
+                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)));
+
+        if (targetHeaders != null) rb.header("X-Target-Headers", targetHeaders);
+        if (sessionId != null) rb.header("Mcp-Session-Id", sessionId);
+
+        HttpResponse<String> resp = httpClient.send(rb.build(), HttpResponse.BodyHandlers.ofString());
+        resp.headers().firstValue("mcp-session-id").ifPresent(s -> sessionId = s);
+
+        String body = resp.body();
+        for (String line : body.split("\n")) {
+            if (line.startsWith("data:")) {
+                return mapper.readTree(line.substring(5).trim());
+            }
+        }
+        return mapper.readTree(body);
+    }
+
+    public JsonNode initialize() throws Exception {
+        ObjectNode params = mapper.createObjectNode();
+        params.put("protocolVersion", "2025-03-26");
+        params.putObject("capabilities");
+        ObjectNode clientInfo = params.putObject("clientInfo");
+        clientInfo.put("name", "java-jackson-client");
+        clientInfo.put("version", "1.0");
+        return request("initialize", params);
+    }
+
+    public JsonNode listTools() throws Exception {
+        return request("tools/list", null);
+    }
+
+    public JsonNode query(String toolName, String question) throws Exception {
+        ObjectNode params = mapper.createObjectNode();
+        params.put("name", toolName);
+        ObjectNode args = params.putObject("arguments");
+        args.put("question", question);
+        return request("tools/call", params);
+    }
+
+    public JsonNode execute(String toolName, ObjectNode arguments) throws Exception {
+        ObjectNode params = mapper.createObjectNode();
+        params.put("name", toolName);
+        params.set("arguments", arguments);
+        return request("tools/call", params);
+    }
+
+    // ── Usage ──────────────────────────────────────────────────────
+    public static void main(String[] args) throws Exception {
+        MCPClientJackson client = new MCPClientJackson(
+                "https://rickandmortyapi.com/graphql",
+                "graphql",
+                null // no auth needed
+        );
+
+        // Initialize
+        client.initialize();
+        System.out.println("Connected! Session: " + client.sessionId);
+
+        // List tools
+        JsonNode tools = client.listTools();
+        System.out.println("Tools: " + tools.path("result").path("tools"));
+
+        // Natural language query
+        JsonNode answer = client.query("rickandmortyapi_query",
+                "Show all locations of type Planet with their dimension");
+        System.out.println("Answer: " + answer.toPrettyString().substring(0, 500));
+
+        // Direct execution
+        ObjectNode execArgs = mapper.createObjectNode();
+        execArgs.put("query", "{ episodes(page: 1) { results { name episode } } }");
+        JsonNode episodes = client.execute("rickandmortyapi_execute", execArgs);
+        System.out.println("Episodes: " + episodes.toPrettyString().substring(0, 500));
+    }
+}
+```
+
+---
+
+### 21.4 REST API Example (All Languages)
+
+The examples above use a GraphQL target. Here's how to adapt for a **REST API**:
+
+#### Python (REST)
+
+```python
+# Change the headers for a REST API
+API_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+    "X-Target-URL": "https://petstore3.swagger.io/api/v3/openapi.json",
+    "X-API-Type": "rest",
+    "X-Base-URL": "https://petstore3.swagger.io/api/v3",
+    # For auth: "X-Target-Headers": json.dumps({"Authorization": "Bearer token"}),
+}
+
+# Tool names change based on hostname
+# petstore3_swagger_query, petstore3_swagger_execute
+
+# NL query
+result = await client.query("petstore3_swagger_query", "What pets are available?")
+
+# Direct REST execution
+result = await client.execute("petstore3_swagger_execute",
+    method="GET",
+    path="/pet/findByStatus",
+    query_params={"status": "available"},
+)
+```
+
+#### Node.js (REST)
+
+```javascript
+const API_HEADERS = {
+  "Content-Type": "application/json",
+  Accept: "application/json, text/event-stream",
+  "X-Target-URL": "https://petstore3.swagger.io/api/v3/openapi.json",
+  "X-API-Type": "rest",
+  "X-Base-URL": "https://petstore3.swagger.io/api/v3",
+};
+
+// Direct REST call
+const result = await mcpRequest("tools/call", {
+  name: "petstore3_swagger_execute",
+  arguments: {
+    method: "GET",
+    path: "/pet/findByStatus",
+    query_params: { status: "available" },
+  },
+});
+```
+
+#### Java (REST)
+
+```java
+// Change constructor for REST API
+MCPClientJackson client = new MCPClientJackson(
+    "https://petstore3.swagger.io/api/v3/openapi.json",
+    "rest",
+    null
+);
+// Also add X-Base-URL header in the request builder:
+// rb.header("X-Base-URL", "https://petstore3.swagger.io/api/v3");
+
+// Direct REST execution
+ObjectNode args = mapper.createObjectNode();
+args.put("method", "GET");
+args.put("path", "/pet/findByStatus");
+ObjectNode qp = args.putObject("query_params");
+qp.put("status", "available");
+JsonNode pets = client.execute("petstore3_swagger_execute", args);
+```
+
+---
+
+### 21.5 cURL Quick Reference
+
+For quick testing without code:
+
+```bash
+# ── Initialize session ──────────────────────────────────────────
+SESSION=$(curl -s -D - -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "X-Target-URL: https://rickandmortyapi.com/graphql" \
+  -H "X-API-Type: graphql" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}' \
+  2>/dev/null | grep -i "mcp-session-id" | awk '{print $2}' | tr -d '\r')
+
+echo "Session: $SESSION"
+
+# ── List tools ──────────────────────────────────────────────────
+curl -s -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: $SESSION" \
+  -H "X-Target-URL: https://rickandmortyapi.com/graphql" \
+  -H "X-API-Type: graphql" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+
+# ── Natural language query ──────────────────────────────────────
+curl -s -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: $SESSION" \
+  -H "X-Target-URL: https://rickandmortyapi.com/graphql" \
+  -H "X-API-Type: graphql" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"rickandmortyapi_query","arguments":{"question":"How many episodes exist?"}}}'
+
+# ── Direct execution ────────────────────────────────────────────
+curl -s -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: $SESSION" \
+  -H "X-Target-URL: https://rickandmortyapi.com/graphql" \
+  -H "X-API-Type: graphql" \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"rickandmortyapi_execute","arguments":{"query":"{ characters(page:1) { results { name status } } }"}}}'
+```
