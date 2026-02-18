@@ -21,7 +21,13 @@ class Settings(BaseSettings):
         """Slugified MCP_NAME for identifiers."""
         return re.sub(r"[^a-z0-9]+", "_", self.MCP_NAME.lower()).strip("_")
 
-    # LLM (accepts both API_AGENT_OPENAI_* and OPENAI_*)
+    # LLM Provider: "openai" or "azure"
+    LLM_PROVIDER: str = Field(
+        default="openai",
+        validation_alias=AliasChoices("API_AGENT_LLM_PROVIDER", "LLM_PROVIDER"),
+    )
+
+    # OpenAI settings (accepts both API_AGENT_OPENAI_* and OPENAI_*)
     OPENAI_API_KEY: str = Field(
         default="",
         validation_alias=AliasChoices("API_AGENT_OPENAI_API_KEY", "OPENAI_API_KEY"),
@@ -30,6 +36,29 @@ class Settings(BaseSettings):
         default="https://api.openai.com/v1",
         validation_alias=AliasChoices("API_AGENT_OPENAI_BASE_URL", "OPENAI_BASE_URL"),
     )
+
+    # Azure OpenAI settings
+    AZURE_OPENAI_API_KEY: str = Field(
+        default="",
+        validation_alias=AliasChoices("API_AGENT_AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_KEY"),
+    )
+    AZURE_OPENAI_ENDPOINT: str = Field(
+        default="",
+        validation_alias=AliasChoices("API_AGENT_AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT"),
+    )
+    AZURE_OPENAI_DEPLOYMENT_NAME: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "API_AGENT_AZURE_OPENAI_DEPLOYMENT_NAME", "AZURE_OPENAI_DEPLOYMENT_NAME"
+        ),
+    )
+    AZURE_OPENAI_API_VERSION: str = Field(
+        default="2024-12-01-preview",
+        validation_alias=AliasChoices(
+            "API_AGENT_AZURE_OPENAI_API_VERSION", "AZURE_OPENAI_API_VERSION"
+        ),
+    )
+
     MODEL_NAME: str = "gpt-5.2"
     REASONING_EFFORT: str = ""  # "low", "medium", "high" - empty = disabled
 
