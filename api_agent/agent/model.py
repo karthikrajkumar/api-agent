@@ -25,16 +25,36 @@ if not tracing_enabled():
 
 
 def _build_client() -> AsyncOpenAI:
-    """Build the appropriate OpenAI client based on LLM_PROVIDER setting."""
+    """Build the appropriate OpenAI client based on LLM_PROVIDER setting.
+
+    Missing credentials are logged as warnings (not raised) so that module
+    import succeeds during tests/CI.  The actual error will surface at
+    request time when the client tries to call the LLM.
+    """
     provider = settings.LLM_PROVIDER.lower().strip()
 
     if provider == "azure":
+        missing = []
         if not settings.AZURE_OPENAI_API_KEY:
-            raise ValueError("AZURE_OPENAI_API_KEY is required when LLM_PROVIDER=azure")
+            missing.append("AZURE_OPENAI_API_KEY")
         if not settings.AZURE_OPENAI_ENDPOINT:
-            raise ValueError("AZURE_OPENAI_ENDPOINT is required when LLM_PROVIDER=azure")
+            missing.append("AZURE_OPENAI_ENDPOINT")
         if not settings.AZURE_OPENAI_DEPLOYMENT_NAME:
-            raise ValueError("AZURE_OPENAI_DEPLOYMENT_NAME is required when LLM_PROVIDER=azure")
+            missing.append("AZURE_OPENAI_DEPLOYMENT_NAME")
+
+        if missing:
+            logger.warning(
+                "LLM_PROVIDER=azure but missing credentials: %s. "
+                "LLM calls will fail until these are set.",
+                ", ".join(missing),
+            )
+            # Return a placeholder client so import succeeds (tests/CI)
+            return AsyncAzureOpenAI(
+                api_key=settings.AZURE_OPENAI_API_KEY or "not-set",
+                azure_endpoint=settings.AZURE_OPENAI_ENDPOINT or "https://placeholder.openai.azure.com",
+                azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_NAME or "placeholder",
+                api_version=settings.AZURE_OPENAI_API_VERSION,
+            )
 
         logger.info(
             "Using Azure OpenAI: endpoint=%s deployment=%s api_version=%s",
@@ -49,9 +69,14 @@ def _build_client() -> AsyncOpenAI:
             api_version=settings.AZURE_OPENAI_API_VERSION,
         )
     else:
+        if not settings.OPENAI_API_KEY:
+            logger.warning(
+                "LLM_PROVIDER=openai but OPENAI_API_KEY is not set. "
+                "LLM calls will fail until it is provided.",
+            )
         logger.info("Using OpenAI: base_url=%s", settings.OPENAI_BASE_URL)
         return AsyncOpenAI(
-            api_key=settings.OPENAI_API_KEY,
+            api_key=settings.OPENAI_API_KEY or "not-set",
             base_url=settings.OPENAI_BASE_URL,
         )
 
