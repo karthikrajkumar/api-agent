@@ -139,6 +139,8 @@ There is **no offline mode** — the server acts as a live proxy between the MCP
 OPENAI_API_KEY=your_key uvx --from git+https://github.com/agoda-com/api-agent api-agent
 ```
 
+> For the full list of configurable settings, see the `.env.example` file in the repository root.
+
 ### Option B: Clone & Run with `uv`
 
 ```bash
@@ -147,7 +149,13 @@ cd api-agent
 uv sync
 ```
 
-Create a `.env` file (or export environment variables):
+Configure your environment — copy the example file and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` with your LLM credentials. The `.env.example` file contains **all available settings** with descriptions and defaults. At minimum, set:
 
 ```env
 # For OpenAI
@@ -162,6 +170,8 @@ AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o
 AZURE_OPENAI_API_VERSION=2024-12-01-preview
 ```
 
+> **Tip**: The `.env.example` file is version-controlled and documents every setting — LLM provider, server config, agent limits, polling, recipes, and tracing. See [Environment Variables Reference](#15-environment-variables-reference) for full details.
+
 Start the server:
 
 ```bash
@@ -175,6 +185,7 @@ Server starts at `http://localhost:3000`.
 ```bash
 git clone https://github.com/agoda-com/api-agent.git
 cd api-agent
+cp .env.example .env   # ← edit with your LLM credentials
 docker build -t api-agent .
 docker run -p 3000:3000 --env-file .env api-agent
 ```
@@ -182,6 +193,7 @@ docker run -p 3000:3000 --env-file .env api-agent
 ### Option D: Docker Compose (recommended for production)
 
 ```bash
+cp .env.example .env   # ← edit with your LLM credentials
 docker compose up -d
 ```
 
