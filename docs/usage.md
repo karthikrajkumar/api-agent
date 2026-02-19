@@ -131,12 +131,17 @@ There is **no offline mode** — the server acts as a live proxy between the MCP
 ### Prerequisites
 
 - **Python 3.11+**
-- An LLM API key (OpenAI or Azure OpenAI)
+- An Azure OpenAI API key (or OpenAI API key)
 
 ### Option A: Direct Run (no clone)
 
 ```bash
-OPENAI_API_KEY=your_key uvx --from git+https://github.com/Accenture-NEU/312826_api-agent api-agent
+# Set Azure OpenAI credentials as env vars and run directly
+LLM_PROVIDER=azure \
+AZURE_OPENAI_API_KEY=your-key \
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/ \
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o \
+uvx --from git+https://github.com/Accenture-NEU/312826_api-agent api-agent
 ```
 
 > For the full list of configurable settings, see the `.env.example` file in the repository root.
@@ -155,19 +160,19 @@ Configure your environment — copy the example file and fill in your values:
 cp .env.example .env
 ```
 
-Then edit `.env` with your LLM credentials. The `.env.example` file contains **all available settings** with descriptions and defaults. At minimum, set:
+Then edit `.env` with your Azure OpenAI credentials. The `.env.example` file contains **all available settings** with descriptions and defaults. At minimum, set:
 
 ```env
-# For OpenAI
-LLM_PROVIDER=openai
-OPENAI_API_KEY=sk-...
-
-# OR for Azure OpenAI
+# Azure OpenAI (default)
 LLM_PROVIDER=azure
-AZURE_OPENAI_API_KEY=your_key
+AZURE_OPENAI_API_KEY=your-azure-api-key
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o
 AZURE_OPENAI_API_VERSION=2024-12-01-preview
+
+# OR for OpenAI (alternative)
+# LLM_PROVIDER=openai
+# OPENAI_API_KEY=sk-...
 ```
 
 > **Tip**: The `.env.example` file is version-controlled and documents every setting — LLM provider, server config, agent limits, polling, recipes, and tracing. See [Environment Variables Reference](#15-environment-variables-reference) for full details.
@@ -689,18 +694,9 @@ This allows POST/PUT/DELETE/PATCH **only** on paths matching the patterns. The m
 
 ## 14. LLM Provider Configuration
 
-API Agent supports two LLM providers: **OpenAI** and **Azure OpenAI**.
+API Agent supports two LLM providers: **Azure OpenAI** (default) and **OpenAI**.
 
-### OpenAI (default)
-
-```env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=sk-...
-OPENAI_BASE_URL=https://api.openai.com/v1    # optional, default
-API_AGENT_MODEL_NAME=gpt-5.2                  # optional, default
-```
-
-### Azure OpenAI
+### Azure OpenAI (default)
 
 ```env
 LLM_PROVIDER=azure
@@ -708,6 +704,15 @@ AZURE_OPENAI_API_KEY=your-azure-key
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o
 AZURE_OPENAI_API_VERSION=2024-12-01-preview   # optional, default
+```
+
+### OpenAI (alternative)
+
+```env
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=https://api.openai.com/v1    # optional, default
+API_AGENT_MODEL_NAME=gpt-5.2                  # optional, default
 ```
 
 ### Custom / OpenAI-Compatible Providers
@@ -741,12 +746,12 @@ All variables accept the `API_AGENT_` prefix. For OpenAI/Azure variables, both p
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `LLM_PROVIDER` | No | `openai` | LLM provider: `openai` or `azure` |
-| `OPENAI_API_KEY` | Yes (if openai) | — | OpenAI API key |
-| `OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | OpenAI base URL |
+| `LLM_PROVIDER` | No | `azure` | LLM provider: `azure` or `openai` |
 | `AZURE_OPENAI_API_KEY` | Yes (if azure) | — | Azure OpenAI API key |
 | `AZURE_OPENAI_ENDPOINT` | Yes (if azure) | — | Azure resource endpoint |
 | `AZURE_OPENAI_DEPLOYMENT_NAME` | Yes (if azure) | — | Azure deployment name |
+| `OPENAI_API_KEY` | Yes (if openai) | — | OpenAI API key |
+| `OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | OpenAI base URL |
 | `AZURE_OPENAI_API_VERSION` | No | `2024-12-01-preview` | Azure API version |
 | `API_AGENT_MODEL_NAME` | No | `gpt-5.2` | Model name (OpenAI provider only) |
 | `API_AGENT_REASONING_EFFORT` | No | (empty) | Reasoning effort: `low`, `medium`, `high` |

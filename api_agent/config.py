@@ -21,9 +21,9 @@ class Settings(BaseSettings):
         """Slugified MCP_NAME for identifiers."""
         return re.sub(r"[^a-z0-9]+", "_", self.MCP_NAME.lower()).strip("_")
 
-    # LLM Provider: "openai" or "azure"
+    # LLM Provider: "azure" or "openai"
     LLM_PROVIDER: str = Field(
-        default="openai",
+        default="azure",
         validation_alias=AliasChoices("API_AGENT_LLM_PROVIDER", "LLM_PROVIDER"),
     )
 

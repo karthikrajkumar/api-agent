@@ -19,19 +19,29 @@ Point at any GraphQL or REST API. Ask questions in natural language. The agent f
 **1. Run (choose one):**
 
 ```bash
-# Direct run (no clone needed)
-OPENAI_API_KEY=your_key uvx --from git+https://github.com/Accenture-NEU/312826_api-agent api-agent
-
-# Or clone & run
+# Clone & run
 git clone https://github.com/Accenture-NEU/312826_api-agent.git && cd 312826_api-agent
-cp .env.example .env   # ← edit with your LLM credentials
+cp .env.example .env   # ← edit with your Azure OpenAI credentials
 uv sync && uv run api-agent
 
 # Or Docker
 git clone https://github.com/Accenture-NEU/312826_api-agent.git && cd 312826_api-agent
-cp .env.example .env   # ← edit with your LLM credentials
+cp .env.example .env   # ← edit with your Azure OpenAI credentials
 docker build -t api-agent .
 docker run -p 3000:3000 --env-file .env api-agent
+
+# Or Docker Compose (recommended)
+cp .env.example .env   # ← edit with your Azure OpenAI credentials
+docker compose up -d
+```
+
+**`.env` — minimum required settings:**
+```env
+LLM_PROVIDER=azure
+AZURE_OPENAI_API_KEY=your-azure-api-key
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
 ```
 
 **2. Add to any MCP client:**
@@ -127,15 +137,24 @@ Cached pipelines, no LLM reasoning. Appear after successful queries. Clients not
 
 ### Configuration
 
-| Variable                      | Required | Default                   | Description                        |
-| ----------------------------- | -------- | ------------------------- | ---------------------------------- |
-| `OPENAI_API_KEY`              | **Yes**  | -                         | OpenAI API key (or custom LLM key) |
-| `OPENAI_BASE_URL`             | No       | https://api.openai.com/v1 | Custom LLM endpoint                |
-| `API_AGENT_MODEL_NAME`        | No       | gpt-5.2                   | Model (e.g., gpt-5.2)              |
-| `API_AGENT_PORT`              | No       | 3000                      | Server port                        |
-| `API_AGENT_ENABLE_RECIPES`    | No       | true                      | Enable recipe learning & caching   |
-| `API_AGENT_RECIPE_CACHE_SIZE` | No       | 64                        | Max cached recipes (LRU eviction)  |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | No       | -                         | OpenTelemetry tracing endpoint     |
+**LLM Provider** — set `LLM_PROVIDER` to `azure` (default) or `openai`.
+
+| Variable                          | Required           | Default                   | Description                            |
+| --------------------------------- | ------------------ | ------------------------- | -------------------------------------- |
+| `LLM_PROVIDER`                    | No                 | `azure`                   | `azure` or `openai`                    |
+| `AZURE_OPENAI_API_KEY`            | **Yes** (Azure)    | -                         | Azure OpenAI API key                   |
+| `AZURE_OPENAI_ENDPOINT`           | **Yes** (Azure)    | -                         | Azure OpenAI endpoint URL              |
+| `AZURE_OPENAI_DEPLOYMENT_NAME`    | **Yes** (Azure)    | -                         | Azure deployment name (e.g., `gpt-4o`) |
+| `AZURE_OPENAI_API_VERSION`        | No                 | `2024-12-01-preview`      | Azure API version                      |
+| `OPENAI_API_KEY`                  | **Yes** (OpenAI)   | -                         | OpenAI API key (if using OpenAI)       |
+| `OPENAI_BASE_URL`                 | No                 | https://api.openai.com/v1 | Custom OpenAI-compatible endpoint      |
+| `API_AGENT_MODEL_NAME`            | No                 | gpt-5.2                   | Model name                             |
+| `API_AGENT_PORT`                  | No                 | 3000                      | Server port                            |
+| `API_AGENT_ENABLE_RECIPES`        | No                 | true                      | Enable recipe learning & caching       |
+| `API_AGENT_RECIPE_CACHE_SIZE`     | No                 | 64                        | Max cached recipes (LRU eviction)      |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`     | No                 | -                         | OpenTelemetry tracing endpoint         |
+
+> See `.env.example` for the full list of all configurable settings with descriptions.
 
 ---
 

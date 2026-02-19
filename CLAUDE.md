@@ -34,7 +34,8 @@ uv run ty check                      # Type check
 **Docker:**
 ```bash
 docker build -t api-agent .
-docker run -p 3000:3000 -e OPENAI_API_KEY="..." api-agent
+docker run -p 3000:3000 --env-file .env api-agent
+# Or Docker Compose: docker compose up -d
 ```
 
 ## Architecture
@@ -71,7 +72,7 @@ docker run -p 3000:3000 -e OPENAI_API_KEY="..." api-agent
   - **graphql_agent.py**: GraphQL agent w/ introspection, query building, SQL
   - **rest_agent.py**: REST agent w/ OpenAPI parsing, polling support
   - **prompts.py**: Shared system prompt fragments
-  - **model.py**: LLM config (OpenAI-compatible)
+  - **model.py**: LLM config (Azure OpenAI default, OpenAI-compatible)
   - **progress.py**: Turn tracking
   - **schema_search.py**: Grep-like schema search tool
   - **contextvar_utils.py**: Safe ContextVar access helpers
