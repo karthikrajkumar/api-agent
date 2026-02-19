@@ -12,7 +12,7 @@ uv sync --group dev
 **Run server:**
 ```bash
 uv run api-agent                    # Local dev
-# Or direct (no clone): uvx --from git+https://github.com/agoda-com/api-agent api-agent
+# Or direct (no clone): uvx --from git+https://github.com/Accenture-NEU/312826_api-agent api-agent
 # Server starts on http://localhost:3000/mcp
 ```
 

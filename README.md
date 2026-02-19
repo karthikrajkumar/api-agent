@@ -20,16 +20,18 @@ Point at any GraphQL or REST API. Ask questions in natural language. The agent f
 
 ```bash
 # Direct run (no clone needed)
-OPENAI_API_KEY=your_key uvx --from git+https://github.com/agoda-com/api-agent api-agent
+OPENAI_API_KEY=your_key uvx --from git+https://github.com/Accenture-NEU/312826_api-agent api-agent
 
 # Or clone & run
-git clone https://github.com/agoda-com/api-agent.git && cd api-agent
-uv sync && OPENAI_API_KEY=your_key uv run api-agent
+git clone https://github.com/Accenture-NEU/312826_api-agent.git && cd 312826_api-agent
+cp .env.example .env   # ← edit with your LLM credentials
+uv sync && uv run api-agent
 
 # Or Docker
-git clone https://github.com/agoda-com/api-agent
+git clone https://github.com/Accenture-NEU/312826_api-agent.git && cd 312826_api-agent
+cp .env.example .env   # ← edit with your LLM credentials
 docker build -t api-agent .
-docker run -p 3000:3000 -e OPENAI_API_KEY=your_key api-agent
+docker run -p 3000:3000 --env-file .env api-agent
 ```
 
 **2. Add to any MCP client:**
@@ -236,8 +238,8 @@ Recipes auto-expire on schema changes. Disable with `API_AGENT_ENABLE_RECIPES=fa
 ## Development
 
 ```bash
-git clone https://github.com/agoda-com/api-agent.git
-cd api-agent
+git clone https://github.com/Accenture-NEU/312826_api-agent.git
+cd 312826_api-agent
 uv sync --group dev
 uv run pytest tests/ -v      # Tests
 uv run ruff check api_agent/  # Lint

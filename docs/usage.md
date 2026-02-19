@@ -136,7 +136,7 @@ There is **no offline mode** — the server acts as a live proxy between the MCP
 ### Option A: Direct Run (no clone)
 
 ```bash
-OPENAI_API_KEY=your_key uvx --from git+https://github.com/agoda-com/api-agent api-agent
+OPENAI_API_KEY=your_key uvx --from git+https://github.com/Accenture-NEU/312826_api-agent api-agent
 ```
 
 > For the full list of configurable settings, see the `.env.example` file in the repository root.
@@ -144,8 +144,8 @@ OPENAI_API_KEY=your_key uvx --from git+https://github.com/agoda-com/api-agent ap
 ### Option B: Clone & Run with `uv`
 
 ```bash
-git clone https://github.com/agoda-com/api-agent.git
-cd api-agent
+git clone https://github.com/Accenture-NEU/312826_api-agent.git
+cd 312826_api-agent
 uv sync
 ```
 
@@ -183,8 +183,8 @@ Server starts at `http://localhost:3000`.
 ### Option C: Docker
 
 ```bash
-git clone https://github.com/agoda-com/api-agent.git
-cd api-agent
+git clone https://github.com/Accenture-NEU/312826_api-agent.git
+cd 312826_api-agent
 cp .env.example .env   # ← edit with your LLM credentials
 docker build -t api-agent .
 docker run -p 3000:3000 --env-file .env api-agent
